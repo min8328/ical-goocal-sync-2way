@@ -1,0 +1,26 @@
+# config.example.yaml 을 복사해 config.yaml 로 저장한 뒤 값을 수정하세요.
+
+apple_calendar_name: "가족"
+
+# Google Calendar ID (기본 캘린더는 "primary", 공유 캘린더는 설정에서 ID 확인)
+google_calendar_id: "primary"
+
+# 동기화 주기(초). 60이면 약 1분마다 양쪽 확인
+poll_interval_seconds: 60
+
+# 동기화할 일정 범위 (오늘 기준 과거/미래 일수)
+sync_days_past: 90
+sync_days_future: 730
+
+# Google OAuth 파일 경로 (맥북에서 실제 경로로 수정)
+google_credentials_path: "~/calendar-sync/credentials.json"
+google_token_path: "~/calendar-sync/token.json"
+
+# 상태 DB (이벤트 매핑·변경 추적)
+state_db_path: "~/calendar-sync/sync_state.db"
+
+# 로그 파일
+log_path: "~/calendar-sync/sync.log"
+
+# 우리가 만든 일정에 붙이는 설명 접두사 (루프 방지·식별용, 비워도 됨)
+sync_marker: "[AGS]"
