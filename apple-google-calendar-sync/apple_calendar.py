@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import subprocess
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import List
+from datetime import datetime, timedelta, timezone
+from typing import Dict, List
+
+logger = logging.getLogger(__name__)
 
 # 필드 구분자 (일정 제목/본문에 거의 안 나오는 ASCII 제어문자)
 FIELD_SEP = "\x1e"
@@ -25,6 +28,7 @@ class AppleEvent:
     start: datetime
     end: datetime
     all_day: bool
+    revision: str = ""  # iCal LAST-MODIFIED 등 (published_ical 모드)
 
     def fingerprint(self) -> str:
         return "|".join(
@@ -35,6 +39,7 @@ class AppleEvent:
                 self.start.isoformat(),
                 self.end.isoformat(),
                 "1" if self.all_day else "0",
+                self.revision,
             ]
         )
 
@@ -173,9 +178,10 @@ with timeout of {ae_timeout_seconds} seconds
         end try
 
         set oneLine to uidText & fieldSep & sumText & fieldSep & descText & fieldSep & locText & fieldSep & (year of sd as text) & fieldSep & (month of sd as integer as text) & fieldSep & (day of sd as text) & fieldSep & (hours of sd as text) & fieldSep & (minutes of sd as text) & fieldSep & (seconds of sd as text) & fieldSep & (year of endVal as text) & fieldSep & (month of endVal as integer as text) & fieldSep & (day of endVal as text) & fieldSep & (hours of endVal as text) & fieldSep & (minutes of endVal as text) & fieldSep & (seconds of endVal as text) & fieldSep & (ad as text)
-        set end of eventRecords to oneLine
-    end repeat
-end tell
+            set end of eventRecords to oneLine
+        end repeat
+    end tell
+end timeout
 
 set AppleScript's text item delimiters to recordSep
 set outText to eventRecords as text
@@ -194,6 +200,91 @@ return outText
             continue
         events.append(_parse_record_line(record))
     return events
+
+
+def _list_events_chunk_auto_split(
+    calendar_name: str,
+    start: datetime,
+    end: datetime,
+    timeout_seconds: int,
+    ae_timeout_seconds: int,
+    min_chunk_days: int,
+) -> List[AppleEvent]:
+    try:
+        return _list_events_chunk(
+            calendar_name, start, end, timeout_seconds, ae_timeout_seconds
+        )
+    except AppleCalendarError as err:
+        msg = str(err)
+        timed_out = "-1712" in msg or "시간이 초과" in msg or "timed out" in msg.lower()
+        span_days = max(1, (end - start).days)
+        if not timed_out or span_days <= min_chunk_days:
+            raise
+        mid = start + timedelta(days=span_days // 2)
+        logger.warning(
+            "Apple Calendar 타임아웃 — 구간 분할 (%s ~ %s, %d일 → 절반)",
+            start.date(),
+            end.date(),
+            span_days,
+        )
+        left = _list_events_chunk_auto_split(
+            calendar_name,
+            start,
+            mid,
+            timeout_seconds,
+            ae_timeout_seconds,
+            min_chunk_days,
+        )
+        right = _list_events_chunk_auto_split(
+            calendar_name,
+            mid + timedelta(seconds=1),
+            end,
+            timeout_seconds,
+            ae_timeout_seconds,
+            min_chunk_days,
+        )
+        return left + right
+
+
+def list_events(
+    calendar_name: str,
+    start: datetime,
+    end: datetime,
+    timeout_seconds: int = 600,
+    chunk_days: int = 14,
+    ae_timeout_seconds: int | None = None,
+    min_chunk_days: int = 7,
+) -> List[AppleEvent]:
+    if ae_timeout_seconds is None:
+        ae_timeout_seconds = max(timeout_seconds, 120)
+
+    by_uid: Dict[str, AppleEvent] = {}
+    cursor = start
+    chunk_index = 0
+
+    while cursor < end:
+        chunk_index += 1
+        chunk_end = min(cursor + timedelta(days=chunk_days), end)
+        logger.info(
+            "Apple 조회 구간 %d: %s ~ %s",
+            chunk_index,
+            cursor.strftime("%Y-%m-%d"),
+            chunk_end.strftime("%Y-%m-%d"),
+        )
+        chunk_events = _list_events_chunk_auto_split(
+            calendar_name,
+            cursor,
+            chunk_end,
+            timeout_seconds,
+            ae_timeout_seconds,
+            min_chunk_days,
+        )
+        for ev in chunk_events:
+            if ev.uid:
+                by_uid[ev.uid] = ev
+        cursor = chunk_end + timedelta(seconds=1)
+
+    return list(by_uid.values())
 
 
 def create_event(

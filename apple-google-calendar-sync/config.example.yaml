@@ -2,35 +2,39 @@
 
 apple_calendar_name: "가족"
 
-# Google Calendar ID (기본 캘린더는 "primary", 공유 캘린더는 설정에서 ID 확인)
+# Apple 일정 읽기 방식
+#   published_ical — iCloud 게시 URL (권장, ical_monitor 와 동일)
+#   calendar_app   — Calendar.app AppleScript (Mojave에서 느리거나 -1712)
+apple_source: "published_ical"
+
+# Calendar 앱 → 캘린더 → 게시… → webcal 주소의 https 버전
+# 예: https://pXXX-caldav.icloud.com/published/...
+apple_published_url: ""
+
+# Google Calendar ID (기본 캘린더는 "primary")
 google_calendar_id: "primary"
 
-# 동기화 주기(초). 60이면 약 1분마다 양쪽 확인
 poll_interval_seconds: 60
 
-# 동기화할 일정 범위 (오늘 기준 과거/미래 일수)
-# 첫 테스트는 30 / 90 정도로 줄이면 AppleScript가 훨씬 빨라집니다.
-sync_days_past: 90
-sync_days_future: 730
+sync_days_past: 30
+sync_days_future: 90
 
-# AppleScript(osascript) 프로세스 최대 대기(초)
+# iCal HTTP 타임아웃(초)
+ical_request_timeout_seconds: 30
+
+# true: 첫 실행에 기존 일정 전부 Google로 (대량 생성 주의)
+# false: 첫 실행은 기준선만 저장, 이후 변경분만 반영 (권장)
+ical_bootstrap_import: false
+
+# calendar_app 모드 전용 (published_ical 에서는 무시)
 apple_script_timeout_seconds: 600
-
-# Calendar.app AppleEvent 타임아웃(초). -1712 오류 시 1800 등으로 늘리세요.
 apple_event_timeout_seconds: 1200
-
-# Apple 일정을 나눠 조회하는 일수(작을수록 안정, 느릴 수 있음)
 apple_sync_chunk_days: 14
 
-# Google OAuth 파일 경로 (맥북에서 실제 경로로 수정)
-google_credentials_path: "~/calendar-sync/credentials.json"
-google_token_path: "~/calendar-sync/token.json"
+google_credentials_path: "~/Documents/credentials.json"
+google_token_path: "~/Documents/token.json"
 
-# 상태 DB (이벤트 매핑·변경 추적)
 state_db_path: "~/calendar-sync/sync_state.db"
-
-# 로그 파일
 log_path: "~/calendar-sync/sync.log"
 
-# 우리가 만든 일정에 붙이는 설명 접두사 (루프 방지·식별용, 비워도 됨)
 sync_marker: "[AGS]"

@@ -15,6 +15,7 @@ from typing import Dict, List
 import yaml
 
 import apple_calendar as apple
+import apple_calendar_ical as apple_ical
 import google_calendar as google
 from apple_calendar import AppleEvent
 from google_calendar import GoogleEvent
@@ -23,6 +24,9 @@ from sync_store import LinkRecord, SyncStore
 ORIGIN_APPLE = "apple"
 ORIGIN_GOOGLE = "google"
 META_GOOGLE_SYNC_TOKEN = "google_sync_token"
+META_ICAL_BOOTSTRAP = "ical_bootstrap_done"
+APPLE_SOURCE_ICAL = "published_ical"
+APPLE_SOURCE_APP = "calendar_app"
 
 
 def expand(path: str) -> Path:
@@ -48,7 +52,23 @@ def load_config(path: str) -> dict:
         if key not in cfg:
             raise KeyError(f"config.yaml 에 '{key}' 가 필요합니다.")
     cfg.setdefault("sync_marker", "[AGS]")
+    cfg.setdefault("apple_source", APPLE_SOURCE_ICAL)
     cfg.setdefault("apple_script_timeout_seconds", 600)
+    cfg.setdefault("apple_sync_chunk_days", 14)
+    cfg.setdefault("apple_event_timeout_seconds", 1200)
+    cfg.setdefault("ical_request_timeout_seconds", 30)
+    cfg.setdefault("ical_bootstrap_import", False)
+
+    source = cfg["apple_source"]
+    if source == APPLE_SOURCE_ICAL:
+        if not cfg.get("apple_published_url"):
+            raise KeyError(
+                "apple_source 가 published_ical 이면 apple_published_url 이 필요합니다."
+            )
+    elif source != APPLE_SOURCE_APP:
+        raise KeyError(
+            f"apple_source 는 {APPLE_SOURCE_ICAL} 또는 {APPLE_SOURCE_APP} 이어야 합니다."
+        )
     return cfg
 
 
@@ -110,10 +130,46 @@ class CalendarSyncDaemon:
     def close(self) -> None:
         self.store.close()
 
+    def _apple_source(self) -> str:
+        return self.cfg.get("apple_source", APPLE_SOURCE_ICAL)
+
+    def _fetch_apple_events(
+        self, time_min: datetime, time_max: datetime
+    ) -> Dict[str, AppleEvent]:
+        source = self._apple_source()
+        if source == APPLE_SOURCE_ICAL:
+            log_info("iCal 게시 URL에서 '%s' 일정 읽는 중…", self.apple_cal)
+            events = apple_ical.list_events(
+                self.cfg["apple_published_url"],
+                time_min,
+                time_max,
+                timeout_seconds=int(self.cfg.get("ical_request_timeout_seconds", 30)),
+            )
+        else:
+            timeout = int(self.cfg.get("apple_script_timeout_seconds", 600))
+            log_info(
+                "Apple 캘린더 '%s' 일정 읽는 중… (Calendar.app 응답 대기)",
+                self.apple_cal,
+            )
+            events = apple.list_events(
+                self.apple_cal,
+                time_min,
+                time_max,
+                timeout_seconds=timeout,
+                chunk_days=int(self.cfg.get("apple_sync_chunk_days", 14)),
+                ae_timeout_seconds=int(
+                    self.cfg.get("apple_event_timeout_seconds", 1200)
+                ),
+            )
+        by_uid = {e.uid: e for e in events if e.uid}
+        log_info("Apple 쪽 일정 %d건 (UID %d개)", len(events), len(by_uid))
+        return by_uid
+
     def run_forever(self) -> None:
         interval = int(self.cfg["poll_interval_seconds"])
         logging.info(
-            "동기화 시작 — Apple:'%s' ↔ Google:'%s' (주기 %ds)",
+            "동기화 시작 — Apple(%s):'%s' ↔ Google:'%s' (주기 %ds)",
+            self._apple_source(),
             self.apple_cal,
             self.google_cal,
             interval,
@@ -125,27 +181,36 @@ class CalendarSyncDaemon:
                 logging.exception("동기화 사이클 오류")
             time.sleep(interval)
 
-    def run_once(self, apple_only: bool = False) -> None:
+    def run_once(
+        self,
+        apple_only: bool = False,
+        force_bootstrap_import: bool = False,
+    ) -> None:
         time_min, time_max = sync_window(self.cfg)
-        timeout = int(self.cfg.get("apple_script_timeout_seconds", 600))
 
         log_info(
-            "동기화 사이클 시작 (Apple %s ~ %s UTC, 타임아웃 %ds)",
+            "동기화 사이클 시작 (범위 %s ~ %s UTC, Apple 소스=%s)",
             time_min.strftime("%Y-%m-%d"),
             time_max.strftime("%Y-%m-%d"),
-            timeout,
+            self._apple_source(),
         )
-        log_info("Apple 캘린더 '%s' 일정 읽는 중… (Calendar.app 응답 대기)", self.apple_cal)
-        apple_events = apple.list_events(
-            self.apple_cal,
-            time_min,
-            time_max,
-            timeout_seconds=timeout,
-            chunk_days=int(self.cfg.get("apple_sync_chunk_days", 14)),
-            ae_timeout_seconds=int(self.cfg.get("apple_event_timeout_seconds", 1200)),
-        )
-        log_info("Apple 일정 %d건 조회 완료", len(apple_events))
-        apple_by_uid = {e.uid: e for e in apple_events}
+        apple_by_uid = self._fetch_apple_events(time_min, time_max)
+
+        skip_apple_to_google = False
+        if self._apple_source() == APPLE_SOURCE_ICAL:
+            if force_bootstrap_import:
+                self.store.set_meta(META_ICAL_BOOTSTRAP, "1")
+                log_info("iCal --bootstrap: 기존 일정을 Google에 반영합니다.")
+            elif not self.store.get_meta(META_ICAL_BOOTSTRAP):
+                self.store.set_meta(META_ICAL_BOOTSTRAP, "1")
+                if self.cfg.get("ical_bootstrap_import", False):
+                    log_info("iCal 초기 가져오기: 기존 일정을 Google에 반영합니다.")
+                else:
+                    skip_apple_to_google = True
+                    log_info(
+                        "iCal 초기 기준선 저장 (%d건). 다음 주기부터 변경분만 Google에 반영합니다.",
+                        len(apple_by_uid),
+                    )
 
         if apple_only:
             log_info("Apple 전용 모드 — Google 동기화 생략")
@@ -168,10 +233,11 @@ class CalendarSyncDaemon:
         links = self.store.all_links()
 
         self._apply_google_changes(google_events, apple_by_uid, links)
-        self._apply_apple_changes(apple_events, google_by_id, links)
-
-        # Apple은 매 사이클 전체 목록을 읽으므로, Apple에서 삭제된 항목만 Google에 반영
-        self._reconcile_apple_deletions(apple_by_uid, links)
+        if not skip_apple_to_google:
+            self._apply_apple_changes(list(apple_by_uid.values()), google_by_id, links)
+            self._reconcile_apple_deletions(apple_by_uid, links)
+        else:
+            log_info("이번 사이클은 iCal 기준선만 저장 — Apple→Google 생략")
 
     def _apply_google_changes(
         self,
@@ -379,6 +445,11 @@ def main() -> None:
         action="store_true",
         help="Apple 일정 읽기만 테스트 (Google 생략, 1회 실행)",
     )
+    parser.add_argument(
+        "--bootstrap",
+        action="store_true",
+        help="iCal 모드: 첫 실행에 기존 일정 전체를 Google에 반영 (1회)",
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -390,8 +461,11 @@ def main() -> None:
 
     daemon = CalendarSyncDaemon(cfg)
     try:
-        if args.once or args.apple_only:
-            daemon.run_once(apple_only=args.apple_only)
+        if args.once or args.apple_only or args.bootstrap:
+            daemon.run_once(
+                apple_only=args.apple_only,
+                force_bootstrap_import=args.bootstrap,
+            )
             log_info("단일 동기화 완료")
         else:
             daemon.run_forever()

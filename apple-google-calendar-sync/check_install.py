@@ -11,10 +11,13 @@ def main() -> None:
     path = pathlib.Path(__file__).with_name("apple_calendar.py")
     text = path.read_text(encoding="utf-8")
     checks = [
+        ("apple_calendar_ical.py", "iCal 게시 URL 모듈"),
+        ("normalize_published_url", "iCal URL 정규화"),
         ("_mac_date_literal", "날짜: 맥 date -r 방식 (최신)"),
         ("eventRecords", "변수: lines 예약어 충돌 수정 (최신)"),
         ("set uidText to", "AppleScript: 핸들러 없는 인라인 버전 (최신)"),
         ("year of sd as text", "AppleScript: 숫자 시각 컴포넌트 방식 (최신)"),
+        ("APPLE_SOURCE_ICAL", "sync_daemon: published_ical 모드"),
         ("else set mo1t", "AppleScript: Mojave에서 실패하는 한줄 if/else (교체 필요)"),
         ("on cleanField(t)", "AppleScript: 구버전 핸들러 (교체 필요)"),
         ("Thursday, January 1, 1970", "날짜: 구버전 epoch (교체 필요)"),
