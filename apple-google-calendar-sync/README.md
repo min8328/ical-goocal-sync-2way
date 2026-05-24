@@ -101,6 +101,27 @@ tail -f ~/calendar-sync/sync.log
 | `ical_monitor.py` | ICS 변경 → Pushover (참고용) |
 | `cal_sync_two_way.py` | 구버전 프로토타입 (중복 생성 위험) |
 
+## 중복 일정이 생겼을 때
+
+한 번에 양쪽에 같은 일정이 여러 개 생기면 **잘못된 링크 DB** 때문입니다.
+
+1. Apple·Google에서 **중복 일정 수동 삭제** (원본만 남기기)
+2. 상태 DB 초기화:
+
+```bash
+python3.10 sync_daemon.py --reset-state
+```
+
+3. 다시:
+
+```bash
+python3.10 -u sync_daemon.py --apple-only   # 기준선
+# 가족 캘린더에 테스트 1건만 추가
+python3.10 -u sync_daemon.py --once
+```
+
+`--bootstrap` 은 기존 22건 전부 Google로내므로, 이미 Google에 비슷한 일정이 있으면 **쓰지 마세요**.
+
 ## 문제 해결
 
 | 증상 | 조치 |
@@ -109,6 +130,7 @@ tail -f ~/calendar-sync/sync.log
 | 첫 `--once` 후 Google에 안 생김 | 정상(기준선). 일정 추가 후 다음 주기 확인 |
 | Google→Apple 실패 | `apple_calendar_name`, 캘린더 권한 |
 | `-1712` | `apple_source: published_ical` 사용 |
+| 클론 4개씩 | `--reset-state` 후 위 순서, `fuzzy_match_enabled: true` 확인 |
 
 ## 보안
 

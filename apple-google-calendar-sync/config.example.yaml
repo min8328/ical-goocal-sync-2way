@@ -38,3 +38,10 @@ state_db_path: "~/calendar-sync/sync_state.db"
 log_path: "~/calendar-sync/sync.log"
 
 sync_marker: "[AGS]"
+
+# 제목+시작시각으로 같은 일정 연결 (중복 생성 방지, 권장)
+fuzzy_match_enabled: true
+fuzzy_match_tolerance_minutes: 5
+
+# 매 사이클 Google 전체 목록으로 매칭 (변경분만으로는 중복 위험)
+google_full_list_each_cycle: true

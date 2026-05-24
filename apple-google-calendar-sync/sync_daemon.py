@@ -19,6 +19,11 @@ import apple_calendar_ical as apple_ical
 import google_calendar as google
 from apple_calendar import AppleEvent
 from google_calendar import GoogleEvent
+from sync_matching import (
+    find_apple_for_google,
+    find_google_for_apple,
+    has_sync_marker,
+)
 from sync_store import LinkRecord, SyncStore
 
 ORIGIN_APPLE = "apple"
@@ -58,6 +63,9 @@ def load_config(path: str) -> dict:
     cfg.setdefault("apple_event_timeout_seconds", 1200)
     cfg.setdefault("ical_request_timeout_seconds", 30)
     cfg.setdefault("ical_bootstrap_import", False)
+    cfg.setdefault("fuzzy_match_enabled", True)
+    cfg.setdefault("fuzzy_match_tolerance_minutes", 5)
+    cfg.setdefault("google_full_list_each_cycle", True)
 
     source = cfg["apple_source"]
     if source == APPLE_SOURCE_ICAL:
@@ -216,9 +224,21 @@ class CalendarSyncDaemon:
             log_info("Apple 전용 모드 — Google 동기화 생략")
             return
 
-        log_info("Google Calendar 변경분 조회 중…")
         sync_token = self.store.get_meta(META_GOOGLE_SYNC_TOKEN)
-        google_events, next_token, _ = google.list_events_incremental(
+        if self.cfg.get("google_full_list_each_cycle", True):
+            google_all, _, _ = google.list_events_incremental(
+                self.service,
+                self.google_cal,
+                None,
+                time_min,
+                time_max,
+            )
+            log_info("Google 전체 스캔 %d건 (매칭용)", len(google_all))
+        else:
+            google_all = []
+
+        log_info("Google Calendar 변경분 조회 중…")
+        google_delta, next_token, _ = google.list_events_incremental(
             self.service,
             self.google_cal,
             sync_token,
@@ -227,17 +247,94 @@ class CalendarSyncDaemon:
         )
         if next_token:
             self.store.set_meta(META_GOOGLE_SYNC_TOKEN, next_token)
-        log_info("Google 변경/일정 %d건", len(google_events))
+        log_info("Google 변경분 %d건", len(google_delta))
 
-        google_by_id = {g.event_id: g for g in google_events}
+        google_for_match = google_all if google_all else google_delta
+        google_by_id = {g.event_id: g for g in google_for_match}
+        google_by_ical_uid: Dict[str, GoogleEvent] = {}
+        for g in google_for_match:
+            if g.ical_uid:
+                google_by_ical_uid[g.ical_uid] = g
+
+        links = self.store.all_links()
+        linked = self._auto_link_existing(apple_by_uid, google_for_match, links)
+        log_info("기존 일정 자동 매칭 %d쌍 (DB 링크 %d개)", linked, len(self.store.all_links()))
         links = self.store.all_links()
 
-        self._apply_google_changes(google_events, apple_by_uid, links)
+        self._apply_google_changes(google_delta, apple_by_uid, links)
+        links = self.store.all_links()
         if not skip_apple_to_google:
-            self._apply_apple_changes(list(apple_by_uid.values()), google_by_id, links)
+            self._apply_apple_changes(
+                list(apple_by_uid.values()),
+                google_by_id,
+                google_by_ical_uid,
+                google_for_match,
+                links,
+            )
             self._reconcile_apple_deletions(apple_by_uid, links)
         else:
             log_info("이번 사이클은 iCal 기준선만 저장 — Apple→Google 생략")
+
+    def _match_tolerance(self) -> int:
+        if not self.cfg.get("fuzzy_match_enabled", True):
+            return 0
+        return int(self.cfg.get("fuzzy_match_tolerance_minutes", 5))
+
+    def _auto_link_existing(
+        self,
+        apple_by_uid: Dict[str, AppleEvent],
+        google_events: List[GoogleEvent],
+        links: Dict[str, LinkRecord],
+    ) -> int:
+        tol = self._match_tolerance()
+        count = 0
+        linked_google: set[str] = {r.google_event_id for r in links.values()}
+        linked_apple: set[str] = set(links.keys())
+
+        for gev in google_events:
+            if gev.status == "cancelled":
+                continue
+            if gev.event_id in linked_google:
+                continue
+            if has_sync_marker(gev.description, self.marker):
+                continue
+            aev = find_apple_for_google(gev, apple_by_uid, tol)
+            if not aev or aev.uid in linked_apple:
+                continue
+            self.store.upsert(
+                aev.uid,
+                gev.event_id,
+                gev.ical_uid,
+                aev.fingerprint(),
+                gev.fingerprint(),
+                ORIGIN_GOOGLE,
+            )
+            linked_apple.add(aev.uid)
+            linked_google.add(gev.event_id)
+            count += 1
+            log_info("자동 매칭: %s", gev.summary)
+
+        g_by_ical = {g.ical_uid: g for g in google_events if g.ical_uid}
+        for aev in apple_by_uid.values():
+            if aev.uid in linked_apple:
+                continue
+            gev = find_google_for_apple(aev, g_by_ical, google_events, tol)
+            if not gev or gev.event_id in linked_google:
+                continue
+            self.store.upsert(
+                aev.uid,
+                gev.event_id,
+                gev.ical_uid,
+                aev.fingerprint(),
+                gev.fingerprint(),
+                ORIGIN_APPLE,
+            )
+            linked_apple.add(aev.uid)
+            linked_google.add(gev.event_id)
+            count += 1
+            log_info("자동 매칭: %s", aev.summary)
+
+        return count
 
     def _apply_google_changes(
         self,
@@ -302,7 +399,22 @@ class CalendarSyncDaemon:
                 )
                 continue
 
-            # 신규 Google → Apple
+            if has_sync_marker(gev.description, self.marker):
+                continue
+
+            matched = find_apple_for_google(gev, apple_by_uid, self._match_tolerance())
+            if matched:
+                self.store.upsert(
+                    matched.uid,
+                    gev.event_id,
+                    gev.ical_uid,
+                    matched.fingerprint(),
+                    gev.fingerprint(),
+                    ORIGIN_GOOGLE,
+                )
+                log_info("매칭 연결만 (중복 생성 안 함): %s", gev.summary)
+                continue
+
             apple_uid = gev.ical_uid or str(uuid.uuid4())
             if apple_uid in apple_by_uid:
                 continue
@@ -331,6 +443,8 @@ class CalendarSyncDaemon:
         self,
         apple_events: List[AppleEvent],
         google_by_id: Dict[str, GoogleEvent],
+        google_by_ical_uid: Dict[str, GoogleEvent],
+        google_events: List[GoogleEvent],
         links: Dict[str, LinkRecord],
     ) -> None:
         for aev in apple_events:
@@ -372,6 +486,21 @@ class CalendarSyncDaemon:
                     updated.fingerprint(),
                     ORIGIN_APPLE,
                 )
+                continue
+
+            matched = find_google_for_apple(
+                aev, google_by_ical_uid, google_events, self._match_tolerance()
+            )
+            if matched:
+                self.store.upsert(
+                    aev.uid,
+                    matched.event_id,
+                    matched.ical_uid,
+                    aev.fingerprint(),
+                    matched.fingerprint(),
+                    ORIGIN_APPLE,
+                )
+                log_info("매칭 연결만 (중복 생성 안 함): %s", aev.summary)
                 continue
 
             ical_uid = aev.uid or str(uuid.uuid4())
@@ -450,10 +579,24 @@ def main() -> None:
         action="store_true",
         help="iCal 모드: 첫 실행에 기존 일정 전체를 Google에 반영 (1회)",
     )
+    parser.add_argument(
+        "--reset-state",
+        action="store_true",
+        help="sync_state.db 삭제 후 종료 (중복 정리 후 1회 사용)",
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config)
     setup_logging(cfg["log_path"])
+
+    if args.reset_state:
+        db = expand(cfg["state_db_path"])
+        if db.exists():
+            db.unlink()
+            log_info("상태 DB 삭제: %s", db)
+        else:
+            log_info("상태 DB 없음: %s", db)
+        return
 
     if args.auth:
         run_auth_only(cfg)
