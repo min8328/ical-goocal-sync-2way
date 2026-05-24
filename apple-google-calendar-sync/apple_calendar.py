@@ -154,7 +154,7 @@ end cleanField
 set rangeStart to date "{start_lit}"
 set rangeEnd to date "{end_lit}"
 
-set lines to {{}}
+set eventRecords to {{}}
 
 tell application "Calendar"
     if not (exists calendar "{cal}") then
@@ -173,13 +173,13 @@ tell application "Calendar"
                 set ad to allday event of ev
             end try
             set oneLine to my cleanField(uid of ev) & fieldSep & my cleanField(summary of ev) & fieldSep & my cleanField(description of ev) & fieldSep & my cleanField(location of ev) & fieldSep & my isoDate(sd) & fieldSep & my isoDate(endVal) & fieldSep & (ad as text)
-            set end of lines to oneLine
+            set end of eventRecords to oneLine
         end if
     end repeat
 end tell
 
 set AppleScript's text item delimiters to recordSep
-set outText to lines as text
+set outText to eventRecords as text
 set AppleScript's text item delimiters to ""
 return outText
 '''
