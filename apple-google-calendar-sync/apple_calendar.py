@@ -39,16 +39,24 @@ class AppleEvent:
         )
 
 
-def _run_applescript(script: str) -> str:
+def _run_applescript(script: str, timeout_seconds: int = 600) -> str:
     """Mojave 호환: 여러 줄 스크립트는 stdin으로 전달."""
-    proc = subprocess.run(
-        ["osascript", "-"],
-        input=script,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        check=False,
-    )
+    try:
+        proc = subprocess.run(
+            ["osascript", "-"],
+            input=script,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise AppleCalendarError(
+            f"AppleScript 시간 초과 ({timeout_seconds}초). "
+            "Calendar.app이 응답하지 않거나 일정이 너무 많습니다. "
+            "config.yaml 의 sync_days_past/sync_days_future 를 줄여 보세요."
+        ) from exc
     if proc.returncode != 0:
         err = (proc.stderr or proc.stdout or "").strip()
         raise AppleCalendarError(err or "AppleScript failed")
@@ -104,6 +112,7 @@ def list_events(
     calendar_name: str,
     start: datetime,
     end: datetime,
+    timeout_seconds: int = 600,
 ) -> List[AppleEvent]:
     cal = _escape_applescript_string(calendar_name)
     start_lit = _mac_date_literal(start)
@@ -161,20 +170,19 @@ tell application "Calendar"
         error "Calendar not found: {cal}"
     end if
     set calRef to calendar "{cal}"
-    repeat with ev in (every event of calRef)
+    set matched to every event of calRef whose start date is greater than or equal to rangeStart and start date is less than or equal to rangeEnd
+    repeat with ev in matched
         set sd to start date of ev
-        if sd is greater than or equal to rangeStart and sd is less than or equal to rangeEnd then
-            set endVal to sd
-            try
-                set endVal to end date of ev
-            end try
-            set ad to false
-            try
-                set ad to allday event of ev
-            end try
-            set oneLine to my cleanField(uid of ev) & fieldSep & my cleanField(summary of ev) & fieldSep & my cleanField(description of ev) & fieldSep & my cleanField(location of ev) & fieldSep & my isoDate(sd) & fieldSep & my isoDate(endVal) & fieldSep & (ad as text)
-            set end of eventRecords to oneLine
-        end if
+        set endVal to sd
+        try
+            set endVal to end date of ev
+        end try
+        set ad to false
+        try
+            set ad to allday event of ev
+        end try
+        set oneLine to my cleanField(uid of ev) & fieldSep & my cleanField(summary of ev) & fieldSep & my cleanField(description of ev) & fieldSep & my cleanField(location of ev) & fieldSep & my isoDate(sd) & fieldSep & my isoDate(endVal) & fieldSep & (ad as text)
+        set end of eventRecords to oneLine
     end repeat
 end tell
 
@@ -184,7 +192,7 @@ set AppleScript's text item delimiters to ""
 return outText
 '''
 
-    raw = _run_applescript(script)
+    raw = _run_applescript(script, timeout_seconds=timeout_seconds)
     if not raw:
         return []
 

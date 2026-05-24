@@ -48,6 +48,7 @@ def load_config(path: str) -> dict:
         if key not in cfg:
             raise KeyError(f"config.yaml 에 '{key}' 가 필요합니다.")
     cfg.setdefault("sync_marker", "[AGS]")
+    cfg.setdefault("apple_script_timeout_seconds", 600)
     return cfg
 
 
@@ -61,7 +62,14 @@ def setup_logging(log_path: str) -> None:
             logging.FileHandler(log_file, encoding="utf-8"),
             logging.StreamHandler(sys.stdout),
         ],
+        force=True,
     )
+
+
+def log_info(message: str, *args) -> None:
+    logging.info(message, *args)
+    for handler in logging.root.handlers:
+        handler.flush()
 
 
 def sync_window(cfg: dict) -> tuple[datetime, datetime]:
@@ -117,12 +125,28 @@ class CalendarSyncDaemon:
                 logging.exception("동기화 사이클 오류")
             time.sleep(interval)
 
-    def run_once(self) -> None:
+    def run_once(self, apple_only: bool = False) -> None:
         time_min, time_max = sync_window(self.cfg)
+        timeout = int(self.cfg.get("apple_script_timeout_seconds", 600))
 
-        apple_events = apple.list_events(self.apple_cal, time_min, time_max)
+        log_info(
+            "동기화 사이클 시작 (Apple %s ~ %s UTC, 타임아웃 %ds)",
+            time_min.strftime("%Y-%m-%d"),
+            time_max.strftime("%Y-%m-%d"),
+            timeout,
+        )
+        log_info("Apple 캘린더 '%s' 일정 읽는 중… (Calendar.app 응답 대기)", self.apple_cal)
+        apple_events = apple.list_events(
+            self.apple_cal, time_min, time_max, timeout_seconds=timeout
+        )
+        log_info("Apple 일정 %d건 조회 완료", len(apple_events))
         apple_by_uid = {e.uid: e for e in apple_events}
 
+        if apple_only:
+            log_info("Apple 전용 모드 — Google 동기화 생략")
+            return
+
+        log_info("Google Calendar 변경분 조회 중…")
         sync_token = self.store.get_meta(META_GOOGLE_SYNC_TOKEN)
         google_events, next_token, _ = google.list_events_incremental(
             self.service,
@@ -133,6 +157,7 @@ class CalendarSyncDaemon:
         )
         if next_token:
             self.store.set_meta(META_GOOGLE_SYNC_TOKEN, next_token)
+        log_info("Google 변경/일정 %d건", len(google_events))
 
         google_by_id = {g.event_id: g for g in google_events}
         links = self.store.all_links()
@@ -344,6 +369,11 @@ def main() -> None:
         action="store_true",
         help="Google OAuth만 수행하고 종료",
     )
+    parser.add_argument(
+        "--apple-only",
+        action="store_true",
+        help="Apple 일정 읽기만 테스트 (Google 생략)",
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -356,8 +386,8 @@ def main() -> None:
     daemon = CalendarSyncDaemon(cfg)
     try:
         if args.once:
-            daemon.run_once()
-            logging.info("단일 동기화 완료")
+            daemon.run_once(apple_only=args.apple_only)
+            log_info("단일 동기화 완료")
         else:
             daemon.run_forever()
     finally:

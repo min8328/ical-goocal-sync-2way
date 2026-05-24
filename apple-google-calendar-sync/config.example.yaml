@@ -9,8 +9,12 @@ google_calendar_id: "primary"
 poll_interval_seconds: 60
 
 # 동기화할 일정 범위 (오늘 기준 과거/미래 일수)
+# 첫 테스트는 30 / 90 정도로 줄이면 AppleScript가 훨씬 빨라집니다.
 sync_days_past: 90
 sync_days_future: 730
+
+# AppleScript 최대 대기(초). 가족 일정이 많으면 900~1200 으로 늘리세요.
+apple_script_timeout_seconds: 600
 
 # Google OAuth 파일 경로 (맥북에서 실제 경로로 수정)
 google_credentials_path: "~/calendar-sync/credentials.json"
