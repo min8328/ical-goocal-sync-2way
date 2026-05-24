@@ -118,51 +118,12 @@ def list_events(
     start_lit = _mac_date_literal(start)
     end_lit = _mac_date_literal(end)
 
+    # 핸들러는 Mojave에서 바깥 변수(fieldSep 등)를 못 봄 → 인라인만 사용
     script = f'''
 set fieldSep to (ASCII character 30)
 set recordSep to (ASCII character 31)
-
-on pad(n)
-    if n < 10 then return "0" & (n as text)
-    return n as text
-end pad
-
-on isoDate(d)
-    set y to year of d
-    set m to pad(month of d as integer)
-    set dd to pad(day of d)
-    set h to pad(hours of d)
-    set mi to pad(minutes of d)
-    set s to pad(seconds of d)
-    return (y as text) & "-" & m & "-" & dd & "T" & h & ":" & mi & ":" & s
-end isoDate
-
-on asText(v)
-    try
-        return v as text
-    on error
-        return ""
-    end try
-end asText
-
-on cleanField(t)
-    set t to my asText(t)
-    if t contains fieldSep then
-        set AppleScript's text item delimiters to fieldSep
-        set t to text items of t as text
-        set AppleScript's text item delimiters to ""
-    end if
-    if t contains recordSep then
-        set AppleScript's text item delimiters to recordSep
-        set t to text items of t as text
-        set AppleScript's text item delimiters to ""
-    end if
-    return t
-end cleanField
-
 set rangeStart to date "{start_lit}"
 set rangeEnd to date "{end_lit}"
-
 set eventRecords to {{}}
 
 tell application "Calendar"
@@ -181,7 +142,51 @@ tell application "Calendar"
         try
             set ad to allday event of ev
         end try
-        set oneLine to my cleanField(uid of ev) & fieldSep & my cleanField(summary of ev) & fieldSep & my cleanField(description of ev) & fieldSep & my cleanField(location of ev) & fieldSep & my isoDate(sd) & fieldSep & my isoDate(endVal) & fieldSep & (ad as text)
+
+        set uidText to ""
+        try
+            set uidText to uid of ev as text
+        end try
+        set sumText to ""
+        try
+            set sumText to summary of ev as text
+        end try
+        set descText to ""
+        try
+            set descText to description of ev as text
+        end try
+        set locText to ""
+        try
+            set locText to location of ev as text
+        end try
+
+        set y1 to year of sd
+        set mo1 to month of sd as integer
+        set d1 to day of sd
+        set h1 to hours of sd
+        set mi1 to minutes of sd
+        set s1 to seconds of sd
+        if mo1 < 10 then set mo1t to "0" & mo1 else set mo1t to mo1 as text
+        if d1 < 10 then set d1t to "0" & d1 else set d1t to d1 as text
+        if h1 < 10 then set h1t to "0" & h1 else set h1t to h1 as text
+        if mi1 < 10 then set mi1t to "0" & mi1 else set mi1t to mi1 as text
+        if s1 < 10 then set s1t to "0" & s1 else set s1t to s1 as text
+        set startIso to (y1 as text) & "-" & mo1t & "-" & d1t & "T" & h1t & ":" & mi1t & ":" & s1t
+
+        set y2 to year of endVal
+        set mo2 to month of endVal as integer
+        set d2 to day of endVal
+        set h2 to hours of endVal
+        set mi2 to minutes of endVal
+        set s2 to seconds of endVal
+        if mo2 < 10 then set mo2t to "0" & mo2 else set mo2t to mo2 as text
+        if d2 < 10 then set d2t to "0" & d2 else set d2t to d2 as text
+        if h2 < 10 then set h2t to "0" & h2 else set h2t to h2 as text
+        if mi2 < 10 then set mi2t to "0" & mi2 else set mi2t to mi2 as text
+        if s2 < 10 then set s2t to "0" & s2 else set s2t to s2 as text
+        set endIso to (y2 as text) & "-" & mo2t & "-" & d2t & "T" & h2t & ":" & mi2t & ":" & s2t
+
+        set oneLine to uidText & fieldSep & sumText & fieldSep & descText & fieldSep & locText & fieldSep & startIso & fieldSep & endIso & fieldSep & (ad as text)
         set end of eventRecords to oneLine
     end repeat
 end tell

@@ -13,6 +13,8 @@ def main() -> None:
     checks = [
         ("_mac_date_literal", "날짜: 맥 date -r 방식 (최신)"),
         ("eventRecords", "변수: lines 예약어 충돌 수정 (최신)"),
+        ("set uidText to", "AppleScript: 핸들러 없는 인라인 버전 (최신)"),
+        ("on cleanField(t)", "AppleScript: 구버전 핸들러 (교체 필요)"),
         ("Thursday, January 1, 1970", "날짜: 구버전 epoch (교체 필요)"),
         ("set lines to", "변수: lines 예약어 (교체 필요)"),
         ("unixToDate", "날짜: AppleScript unixToDate (구버전, 교체 권장)"),
