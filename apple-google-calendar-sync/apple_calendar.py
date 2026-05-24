@@ -59,6 +59,20 @@ def _escape_applescript_string(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
+# 한국어 macOS 등에서 영문 epoch 문자열이 파싱되지 않음 → shell date -r 사용
+_APPLESCRIPT_UNIX_TO_DATE = """
+on unixToDate(sec)
+    set ds to do shell script "date -r " & (sec as integer) & " '+%Y-%m-%d %H:%M:%S'"
+    try
+        return date ds
+    on error
+        set ds2 to do shell script "date -r " & (sec as integer)
+        return date ds2
+    end try
+end unixToDate
+"""
+
+
 def _parse_apple_datetime(value: str) -> datetime:
     if value.endswith("Z"):
         value = value[:-1] + "+00:00"
@@ -135,9 +149,9 @@ on cleanField(t)
   return t
 end cleanField
 
-set epochDate to date "Thursday, January 1, 1970 00:00:00"
-set rangeStart to epochDate + {start_unix}
-set rangeEnd to epochDate + {end_unix}
+{_APPLESCRIPT_UNIX_TO_DATE}
+set rangeStart to my unixToDate({start_unix})
+set rangeEnd to my unixToDate({end_unix})
 
 set lines to {{}}
 
@@ -197,9 +211,9 @@ def create_event(
     end_unix = int(end.timestamp())
 
     script = f'''
-set epochDate to date "Thursday, January 1, 1970 00:00:00"
-set s to epochDate + {start_unix}
-set e to epochDate + {end_unix}
+{_APPLESCRIPT_UNIX_TO_DATE}
+set s to my unixToDate({start_unix})
+set e to my unixToDate({end_unix})
 tell application "Calendar"
     tell calendar "{cal}"
         set ev to make new event with properties {{summary:"{_escape_applescript_string(summary)}", description:"{_escape_applescript_string(description)}", location:"{_escape_applescript_string(location)}", allday event:{str(all_day).lower()}, start date:s, end date:e}}
@@ -228,9 +242,9 @@ def update_event(
     end_unix = int(end.timestamp())
 
     script = f'''
-set epochDate to date "Thursday, January 1, 1970 00:00:00"
-set s to epochDate + {start_unix}
-set e to epochDate + {end_unix}
+{_APPLESCRIPT_UNIX_TO_DATE}
+set s to my unixToDate({start_unix})
+set e to my unixToDate({end_unix})
 set found to false
 tell application "Calendar"
     tell calendar "{cal}"
