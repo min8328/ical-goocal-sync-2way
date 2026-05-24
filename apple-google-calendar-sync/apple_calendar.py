@@ -59,18 +59,20 @@ def _escape_applescript_string(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
-# 한국어 macOS 등에서 영문 epoch 문자열이 파싱되지 않음 → shell date -r 사용
-_APPLESCRIPT_UNIX_TO_DATE = """
-on unixToDate(sec)
-    set ds to do shell script "date -r " & (sec as integer) & " '+%Y-%m-%d %H:%M:%S'"
-    try
-        return date ds
-    on error
-        set ds2 to do shell script "date -r " & (sec as integer)
-        return date ds2
-    end try
-end unixToDate
-"""
+def _mac_date_literal(dt: datetime) -> str:
+    """맥 로케일의 date -r 출력을 AppleScript date 리터럴로 사용."""
+    ts = int(dt.timestamp())
+    proc = subprocess.run(
+        ["date", "-r", str(ts)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise AppleCalendarError(
+            f"date -r {ts} 실패: {(proc.stderr or proc.stdout).strip()}"
+        )
+    return _escape_applescript_string(proc.stdout.strip())
 
 
 def _parse_apple_datetime(value: str) -> datetime:
@@ -103,9 +105,9 @@ def list_events(
     start: datetime,
     end: datetime,
 ) -> List[AppleEvent]:
-    start_unix = int(start.timestamp())
-    end_unix = int(end.timestamp())
     cal = _escape_applescript_string(calendar_name)
+    start_lit = _mac_date_literal(start)
+    end_lit = _mac_date_literal(end)
 
     script = f'''
 set fieldSep to (ASCII character 30)
@@ -146,12 +148,11 @@ on cleanField(t)
         set t to text items of t as text
         set AppleScript's text item delimiters to ""
     end if
-  return t
+    return t
 end cleanField
 
-{_APPLESCRIPT_UNIX_TO_DATE}
-set rangeStart to my unixToDate({start_unix})
-set rangeEnd to my unixToDate({end_unix})
+set rangeStart to date "{start_lit}"
+set rangeEnd to date "{end_lit}"
 
 set lines to {{}}
 
@@ -207,13 +208,12 @@ def create_event(
     all_day: bool,
 ) -> None:
     cal = _escape_applescript_string(calendar_name)
-    start_unix = int(start.timestamp())
-    end_unix = int(end.timestamp())
+    s_lit = _mac_date_literal(start)
+    e_lit = _mac_date_literal(end)
 
     script = f'''
-{_APPLESCRIPT_UNIX_TO_DATE}
-set s to my unixToDate({start_unix})
-set e to my unixToDate({end_unix})
+set s to date "{s_lit}"
+set e to date "{e_lit}"
 tell application "Calendar"
     tell calendar "{cal}"
         set ev to make new event with properties {{summary:"{_escape_applescript_string(summary)}", description:"{_escape_applescript_string(description)}", location:"{_escape_applescript_string(location)}", allday event:{str(all_day).lower()}, start date:s, end date:e}}
@@ -238,13 +238,12 @@ def update_event(
 ) -> bool:
     cal = _escape_applescript_string(calendar_name)
     uid_esc = _escape_applescript_string(uid)
-    start_unix = int(start.timestamp())
-    end_unix = int(end.timestamp())
+    s_lit = _mac_date_literal(start)
+    e_lit = _mac_date_literal(end)
 
     script = f'''
-{_APPLESCRIPT_UNIX_TO_DATE}
-set s to my unixToDate({start_unix})
-set e to my unixToDate({end_unix})
+set s to date "{s_lit}"
+set e to date "{e_lit}"
 set found to false
 tell application "Calendar"
     tell calendar "{cal}"
