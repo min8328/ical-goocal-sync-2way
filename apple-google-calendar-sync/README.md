@@ -131,6 +131,7 @@ python3.10 -u sync_daemon.py --once
 | Google→Apple 실패 | `apple_calendar_name`, 캘린더 권한 |
 | `-1712` | `apple_source: published_ical` 사용 |
 | 클론 4개씩 | `--reset-state` 후 위 순서, `fuzzy_match_enabled: true` 확인 |
+| 시간·메모 없음 | 최신 `apple_calendar.py`/`google_calendar.py` 적용 후 신규 일정으로 재테스트 |
 
 ## 보안
 

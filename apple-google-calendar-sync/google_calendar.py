@@ -16,6 +16,14 @@ from googleapiclient.errors import HttpError
 
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
 
+# sync_daemon 이 config 에서 설정 (Google API timeZone 필드용 IANA 이름)
+CALENDAR_TIMEZONE = "Asia/Seoul"
+
+
+def set_timezone(iana_name: str) -> None:
+    global CALENDAR_TIMEZONE
+    CALENDAR_TIMEZONE = iana_name or "Asia/Seoul"
+
 
 class GoogleCalendarError(RuntimeError):
     pass
@@ -76,16 +84,21 @@ def get_service(credentials_path: str, token_path: str):
     return build("calendar", "v3", credentials=creds, cache_discovery=False)
 
 
+def _local_tzinfo():
+    return datetime.now().astimezone().tzinfo
+
+
 def _parse_google_dt(value: Dict, all_day: bool) -> datetime:
     raw = value.get("dateTime") or value.get("date")
     if all_day:
-        dt = datetime.strptime(raw, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-        return dt
+        y, m, d = (int(x) for x in raw.split("-"))
+        local = datetime(y, m, d, 0, 0, 0, tzinfo=_local_tzinfo())
+        return local.astimezone(timezone.utc)
     if raw.endswith("Z"):
         raw = raw[:-1] + "+00:00"
     dt = datetime.fromisoformat(raw)
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=_local_tzinfo())
     return dt.astimezone(timezone.utc)
 
 
@@ -98,14 +111,19 @@ def _event_from_api(item: Dict) -> GoogleEvent:
         updated_raw = updated_raw[:-1] + "+00:00"
     updated = datetime.fromisoformat(updated_raw).astimezone(timezone.utc)
 
+    start = _parse_google_dt(start_obj, all_day)
+    end = _parse_google_dt(end_obj, all_day)
+    if not all_day and end <= start:
+        end = start + timedelta(hours=1)
+
     return GoogleEvent(
         event_id=item["id"],
         ical_uid=item.get("iCalUID") or item["id"],
         summary=item.get("summary") or "",
         description=item.get("description") or "",
         location=item.get("location") or "",
-        start=_parse_google_dt(start_obj, all_day),
-        end=_parse_google_dt(end_obj, all_day),
+        start=start,
+        end=end,
         all_day=all_day,
         updated=updated,
         status=item.get("status", "confirmed"),
@@ -162,6 +180,34 @@ def list_events_incremental(
     return events, next_sync, full_reset
 
 
+def _google_time_fields(start: datetime, end: datetime, all_day: bool) -> Dict:
+    tz = _local_tzinfo()
+    tz_name = str(tz)
+    start_local = start.astimezone(tz)
+    end_local = end.astimezone(tz)
+    if all_day:
+        start_local = start_local.replace(hour=0, minute=0, second=0, microsecond=0)
+        end_local = end_local.replace(hour=0, minute=0, second=0, microsecond=0)
+        if end_local <= start_local:
+            end_local = start_local + timedelta(days=1)
+        return {
+            "start": {"date": start_local.strftime("%Y-%m-%d")},
+            "end": {"date": end_local.strftime("%Y-%m-%d")},
+        }
+    if end_local <= start_local:
+        end_local = start_local + timedelta(hours=1)
+    return {
+        "start": {
+            "dateTime": start_local.strftime("%Y-%m-%dT%H:%M:%S"),
+            "timeZone": tz_name,
+        },
+        "end": {
+            "dateTime": end_local.strftime("%Y-%m-%dT%H:%M:%S"),
+            "timeZone": tz_name,
+        },
+    }
+
+
 def create_event(
     service,
     calendar_id: str,
@@ -179,16 +225,7 @@ def create_event(
         "location": location,
         "iCalUID": ical_uid,
     }
-    if all_day:
-        body["start"] = {"date": start.astimezone(timezone.utc).strftime("%Y-%m-%d")}
-        body["end"] = {
-            "date": (end.astimezone(timezone.utc) + timedelta(days=1)).strftime(
-                "%Y-%m-%d"
-            )
-        }
-    else:
-        body["start"] = {"dateTime": start.isoformat()}
-        body["end"] = {"dateTime": end.isoformat()}
+    body.update(_google_time_fields(start, end, all_day))
 
     created = service.events().insert(calendarId=calendar_id, body=body).execute()
     return _event_from_api(created)
@@ -209,18 +246,7 @@ def update_event(
     existing["summary"] = summary
     existing["description"] = description
     existing["location"] = location
-    if all_day:
-        existing["start"] = {
-            "date": start.astimezone(timezone.utc).strftime("%Y-%m-%d")
-        }
-        existing["end"] = {
-            "date": (end.astimezone(timezone.utc) + timedelta(days=1)).strftime(
-                "%Y-%m-%d"
-            )
-        }
-    else:
-        existing["start"] = {"dateTime": start.isoformat()}
-        existing["end"] = {"dateTime": end.isoformat()}
+    existing.update(_google_time_fields(start, end, all_day))
 
     updated = (
         service.events()

@@ -69,11 +69,33 @@ def _run_applescript(script: str, timeout_seconds: int = 600) -> str:
 
 
 def _escape_applescript_string(value: str) -> str:
-    return value.replace("\\", "\\\\").replace('"', '\\"')
+    value = (value or "").replace("\r\n", "\n").replace("\r", "\n")
+    return (
+        value.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", "\\n")
+        .replace("\t", " ")
+    )
 
 
-def _mac_date_literal(dt: datetime) -> str:
-    """맥 로케일의 date -r 출력을 AppleScript date 리터럴로 사용."""
+def _local_datetimes_for_apple(
+    start: datetime, end: datetime, all_day: bool
+) -> tuple[datetime, datetime]:
+    """Calendar.app용 로컬 시각 (종일=자정 기준)."""
+    local_tz = datetime.now().astimezone().tzinfo
+    s = start.astimezone(local_tz)
+    e = end.astimezone(local_tz)
+    if all_day:
+        s = s.replace(hour=0, minute=0, second=0, microsecond=0)
+        e = e.replace(hour=0, minute=0, second=0, microsecond=0)
+        if e <= s:
+            e = s + timedelta(days=1)
+    elif e <= s:
+        e = s + timedelta(hours=1)
+    return s, e
+
+
+def _mac_date_literal_from_dt(dt: datetime) -> str:
     ts = int(dt.timestamp())
     proc = subprocess.run(
         ["date", "-r", str(ts)],
@@ -86,6 +108,11 @@ def _mac_date_literal(dt: datetime) -> str:
             f"date -r {ts} 실패: {(proc.stderr or proc.stdout).strip()}"
         )
     return _escape_applescript_string(proc.stdout.strip())
+
+
+def _mac_date_literal(dt: datetime) -> str:
+    """맥 로케일의 date -r 출력을 AppleScript date 리터럴로 사용."""
+    return _mac_date_literal_from_dt(dt)
 
 
 def _parse_apple_datetime(value: str) -> datetime:
@@ -298,17 +325,33 @@ def create_event(
     all_day: bool,
 ) -> None:
     cal = _escape_applescript_string(calendar_name)
-    s_lit = _mac_date_literal(start)
-    e_lit = _mac_date_literal(end)
+    s_local, e_local = _local_datetimes_for_apple(start, end, all_day)
+    s_lit = _mac_date_literal_from_dt(s_local)
+    e_lit = _mac_date_literal_from_dt(e_local)
+    sum_esc = _escape_applescript_string(summary)
+    desc_esc = _escape_applescript_string(description)
+    loc_esc = _escape_applescript_string(location)
+    uid_esc = _escape_applescript_string(uid)
+    ad = str(all_day).lower()
 
     script = f'''
 set s to date "{s_lit}"
 set e to date "{e_lit}"
 tell application "Calendar"
     tell calendar "{cal}"
-        set ev to make new event with properties {{summary:"{_escape_applescript_string(summary)}", description:"{_escape_applescript_string(description)}", location:"{_escape_applescript_string(location)}", allday event:{str(all_day).lower()}, start date:s, end date:e}}
+        set ev to make new event with properties {{summary:"{sum_esc}", allday event:{ad}, start date:s, end date:e}}
         try
-            set uid of ev to "{_escape_applescript_string(uid)}"
+            set description of ev to "{desc_esc}"
+        on error
+            try
+                set notes of ev to "{desc_esc}"
+            end try
+        end try
+        try
+            set location of ev to "{loc_esc}"
+        end try
+        try
+            set uid of ev to "{uid_esc}"
         end try
     end tell
 end tell
@@ -328,8 +371,13 @@ def update_event(
 ) -> bool:
     cal = _escape_applescript_string(calendar_name)
     uid_esc = _escape_applescript_string(uid)
-    s_lit = _mac_date_literal(start)
-    e_lit = _mac_date_literal(end)
+    s_local, e_local = _local_datetimes_for_apple(start, end, all_day)
+    s_lit = _mac_date_literal_from_dt(s_local)
+    e_lit = _mac_date_literal_from_dt(e_local)
+    sum_esc = _escape_applescript_string(summary)
+    desc_esc = _escape_applescript_string(description)
+    loc_esc = _escape_applescript_string(location)
+    ad = str(all_day).lower()
 
     script = f'''
 set s to date "{s_lit}"
@@ -340,12 +388,20 @@ tell application "Calendar"
         repeat with ev in events
             try
                 if (uid of ev as text) is equal to "{uid_esc}" then
-                    set summary of ev to "{_escape_applescript_string(summary)}"
-                    set description of ev to "{_escape_applescript_string(description)}"
-                    set location of ev to "{_escape_applescript_string(location)}"
-                    set allday event of ev to {str(all_day).lower()}
+                    set summary of ev to "{sum_esc}"
+                    set allday event of ev to {ad}
                     set start date of ev to s
                     set end date of ev to e
+                    try
+                        set description of ev to "{desc_esc}"
+                    on error
+                        try
+                            set notes of ev to "{desc_esc}"
+                        end try
+                    end try
+                    try
+                        set location of ev to "{loc_esc}"
+                    end try
                     set found to true
                     exit repeat
                 end if
