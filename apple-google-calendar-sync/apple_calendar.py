@@ -117,17 +117,17 @@ def _parse_record_line(line: str) -> AppleEvent:
     )
 
 
-def list_events(
+def _list_events_chunk(
     calendar_name: str,
     start: datetime,
     end: datetime,
-    timeout_seconds: int = 600,
+    timeout_seconds: int,
+    ae_timeout_seconds: int,
 ) -> List[AppleEvent]:
     cal = _escape_applescript_string(calendar_name)
     start_lit = _mac_date_literal(start)
     end_lit = _mac_date_literal(end)
 
-    # 핸들러는 Mojave에서 바깥 변수(fieldSep 등)를 못 봄 → 인라인만 사용
     script = f'''
 set fieldSep to (ASCII character 30)
 set recordSep to (ASCII character 31)
@@ -135,13 +135,16 @@ set rangeStart to date "{start_lit}"
 set rangeEnd to date "{end_lit}"
 set eventRecords to {{}}
 
-tell application "Calendar"
-    if not (exists calendar "{cal}") then
-        error "Calendar not found: {cal}"
-    end if
-    set calRef to calendar "{cal}"
-    set matched to every event of calRef whose start date is greater than or equal to rangeStart and start date is less than or equal to rangeEnd
-    repeat with ev in matched
+with timeout of {ae_timeout_seconds} seconds
+    tell application "Calendar"
+        if not running then launch
+        delay 1
+        if not (exists calendar "{cal}") then
+            error "Calendar not found: {cal}"
+        end if
+        set calRef to calendar "{cal}"
+        set matched to every event of calRef whose start date is greater than or equal to rangeStart and start date is less than or equal to rangeEnd
+        repeat with ev in matched
         set sd to start date of ev
         set endVal to sd
         try

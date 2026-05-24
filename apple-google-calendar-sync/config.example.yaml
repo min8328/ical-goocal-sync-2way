@@ -13,8 +13,14 @@ poll_interval_seconds: 60
 sync_days_past: 90
 sync_days_future: 730
 
-# AppleScript 최대 대기(초). 가족 일정이 많으면 900~1200 으로 늘리세요.
+# AppleScript(osascript) 프로세스 최대 대기(초)
 apple_script_timeout_seconds: 600
+
+# Calendar.app AppleEvent 타임아웃(초). -1712 오류 시 1800 등으로 늘리세요.
+apple_event_timeout_seconds: 1200
+
+# Apple 일정을 나눠 조회하는 일수(작을수록 안정, 느릴 수 있음)
+apple_sync_chunk_days: 14
 
 # Google OAuth 파일 경로 (맥북에서 실제 경로로 수정)
 google_credentials_path: "~/calendar-sync/credentials.json"

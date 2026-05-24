@@ -137,7 +137,12 @@ class CalendarSyncDaemon:
         )
         log_info("Apple 캘린더 '%s' 일정 읽는 중… (Calendar.app 응답 대기)", self.apple_cal)
         apple_events = apple.list_events(
-            self.apple_cal, time_min, time_max, timeout_seconds=timeout
+            self.apple_cal,
+            time_min,
+            time_max,
+            timeout_seconds=timeout,
+            chunk_days=int(self.cfg.get("apple_sync_chunk_days", 14)),
+            ae_timeout_seconds=int(self.cfg.get("apple_event_timeout_seconds", 1200)),
         )
         log_info("Apple 일정 %d건 조회 완료", len(apple_events))
         apple_by_uid = {e.uid: e for e in apple_events}
