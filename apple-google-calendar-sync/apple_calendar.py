@@ -92,18 +92,27 @@ def _parse_apple_datetime(value: str) -> datetime:
     return dt.astimezone(timezone.utc)
 
 
+def _local_components_to_utc(parts: List[str], offset: int) -> datetime:
+    """AppleScript에서 넘긴 로컬 시각(년~초) → UTC."""
+    y, mo, d, h, mi, s = (int(parts[offset + i]) for i in range(6))
+    local_tz = datetime.now().astimezone().tzinfo
+    local_dt = datetime(y, mo, d, h, mi, s, tzinfo=local_tz)
+    return local_dt.astimezone(timezone.utc)
+
+
 def _parse_record_line(line: str) -> AppleEvent:
     parts = line.split(FIELD_SEP)
-    if len(parts) < 7:
+    if len(parts) < 17:
         raise AppleCalendarError(f"잘못된 Apple 이벤트 레코드: {line[:120]}")
-    uid, summary, description, location, start_s, end_s, all_day_s = parts[:7]
+    uid, summary, description, location = parts[0], parts[1], parts[2], parts[3]
+    all_day_s = parts[16]
     return AppleEvent(
         uid=uid,
         summary=summary,
         description=description,
         location=location,
-        start=_parse_apple_datetime(start_s),
-        end=_parse_apple_datetime(end_s),
+        start=_local_components_to_utc(parts, 4),
+        end=_local_components_to_utc(parts, 10),
         all_day=all_day_s.lower() in ("true", "1", "yes"),
     )
 
@@ -160,33 +169,7 @@ tell application "Calendar"
             set locText to location of ev as text
         end try
 
-        set y1 to year of sd
-        set mo1 to month of sd as integer
-        set d1 to day of sd
-        set h1 to hours of sd
-        set mi1 to minutes of sd
-        set s1 to seconds of sd
-        if mo1 < 10 then set mo1t to "0" & mo1 else set mo1t to mo1 as text
-        if d1 < 10 then set d1t to "0" & d1 else set d1t to d1 as text
-        if h1 < 10 then set h1t to "0" & h1 else set h1t to h1 as text
-        if mi1 < 10 then set mi1t to "0" & mi1 else set mi1t to mi1 as text
-        if s1 < 10 then set s1t to "0" & s1 else set s1t to s1 as text
-        set startIso to (y1 as text) & "-" & mo1t & "-" & d1t & "T" & h1t & ":" & mi1t & ":" & s1t
-
-        set y2 to year of endVal
-        set mo2 to month of endVal as integer
-        set d2 to day of endVal
-        set h2 to hours of endVal
-        set mi2 to minutes of endVal
-        set s2 to seconds of endVal
-        if mo2 < 10 then set mo2t to "0" & mo2 else set mo2t to mo2 as text
-        if d2 < 10 then set d2t to "0" & d2 else set d2t to d2 as text
-        if h2 < 10 then set h2t to "0" & h2 else set h2t to h2 as text
-        if mi2 < 10 then set mi2t to "0" & mi2 else set mi2t to mi2 as text
-        if s2 < 10 then set s2t to "0" & s2 else set s2t to s2 as text
-        set endIso to (y2 as text) & "-" & mo2t & "-" & d2t & "T" & h2t & ":" & mi2t & ":" & s2t
-
-        set oneLine to uidText & fieldSep & sumText & fieldSep & descText & fieldSep & locText & fieldSep & startIso & fieldSep & endIso & fieldSep & (ad as text)
+        set oneLine to uidText & fieldSep & sumText & fieldSep & descText & fieldSep & locText & fieldSep & (year of sd as text) & fieldSep & (month of sd as integer as text) & fieldSep & (day of sd as text) & fieldSep & (hours of sd as text) & fieldSep & (minutes of sd as text) & fieldSep & (seconds of sd as text) & fieldSep & (year of endVal as text) & fieldSep & (month of endVal as integer as text) & fieldSep & (day of endVal as text) & fieldSep & (hours of endVal as text) & fieldSep & (minutes of endVal as text) & fieldSep & (seconds of endVal as text) & fieldSep & (ad as text)
         set end of eventRecords to oneLine
     end repeat
 end tell

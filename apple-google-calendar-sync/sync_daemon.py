@@ -372,7 +372,7 @@ def main() -> None:
     parser.add_argument(
         "--apple-only",
         action="store_true",
-        help="Apple 일정 읽기만 테스트 (Google 생략)",
+        help="Apple 일정 읽기만 테스트 (Google 생략, 1회 실행)",
     )
     args = parser.parse_args()
 
@@ -385,7 +385,7 @@ def main() -> None:
 
     daemon = CalendarSyncDaemon(cfg)
     try:
-        if args.once:
+        if args.once or args.apple_only:
             daemon.run_once(apple_only=args.apple_only)
             log_info("단일 동기화 완료")
         else:
