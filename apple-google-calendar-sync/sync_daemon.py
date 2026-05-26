@@ -343,6 +343,16 @@ class CalendarSyncDaemon:
             return normalize_all_day_bounds(aev.start, aev.end)
         return aev.start, aev.end
 
+    def _ical_still_has_google_event(
+        self,
+        gev: GoogleEvent,
+        apple_by_uid: Dict[str, AppleEvent],
+    ) -> bool:
+        """iCal 피드에 같은 일정(제목·날짜)이 남아 있으면 Google 취소만으로 Apple 삭제하지 않음."""
+        tol = self._match_tolerance()
+        matched = find_apple_for_google(gev, apple_by_uid, tol)
+        return matched is not None
+
     def _resolve_link_for_ical_event(
         self,
         aev: AppleEvent,
@@ -438,7 +448,7 @@ class CalendarSyncDaemon:
 
             if gev.status == "cancelled":
                 if link:
-                    if link.apple_uid in apple_by_uid:
+                    if self._ical_still_has_google_event(gev, apple_by_uid):
                         log_info(
                             "Google 취소 건너뜀 (Apple iCal에 일정 있음, Apple 삭제 안 함): %s",
                             gev.summary,
@@ -449,6 +459,11 @@ class CalendarSyncDaemon:
                             self.apple_cal, link.apple_uid, gev.start
                         )
                         log_info("Apple 삭제 완료 (Google 취소): %s", gev.summary)
+                    else:
+                        log_info(
+                            "Google 취소 (DB 링크만 정리, Apple 삭제 생략): %s",
+                            gev.summary,
+                        )
                     self.store.delete(link.apple_uid)
                 continue
 
