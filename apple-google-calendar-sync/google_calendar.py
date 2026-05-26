@@ -257,4 +257,9 @@ def update_event(
 
 
 def delete_event(service, calendar_id: str, event_id: str) -> None:
-    service.events().delete(calendarId=calendar_id, eventId=event_id).execute()
+    try:
+        service.events().delete(calendarId=calendar_id, eventId=event_id).execute()
+    except HttpError as err:
+        if err.resp.status == 410:
+            return
+        raise GoogleCalendarError(str(err)) from err

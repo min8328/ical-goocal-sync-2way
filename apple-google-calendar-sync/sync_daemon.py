@@ -21,6 +21,7 @@ from apple_calendar import AppleEvent
 from google_calendar import GoogleEvent
 from sync_matching import (
     core_fields_differ,
+    events_match,
     find_apple_for_google,
     find_google_for_apple,
     has_sync_marker,
@@ -33,6 +34,8 @@ META_GOOGLE_SYNC_TOKEN = "google_sync_token"
 META_ICAL_BOOTSTRAP = "ical_bootstrap_done"
 APPLE_SOURCE_ICAL = "published_ical"
 APPLE_SOURCE_APP = "calendar_app"
+# Google→Apple 직후 iCal 게시 URL에 UID가 안 잡히는 지연
+ICAL_PUBLISH_GRACE = timedelta(minutes=15)
 
 
 def expand(path: str) -> Path:
@@ -279,7 +282,9 @@ class CalendarSyncDaemon:
                 google_for_match,
                 links,
             )
-            self._reconcile_apple_deletions(apple_by_uid, links)
+            self._reconcile_apple_deletions(
+                apple_by_uid, self.store.all_links(), google_by_id
+            )
         else:
             log_info(
                 "이번 사이클은 iCal 기준선 — Apple→Google·Google→Apple 쓰기 생략 (링크만 저장)"
@@ -289,6 +294,45 @@ class CalendarSyncDaemon:
         if not self.cfg.get("fuzzy_match_enabled", True):
             return 0
         return int(self.cfg.get("fuzzy_match_tolerance_minutes", 5))
+
+    def _link_grace_active(self, link: LinkRecord) -> bool:
+        if link.last_origin != ORIGIN_GOOGLE:
+            return False
+        try:
+            updated = datetime.fromisoformat(link.updated_at)
+        except ValueError:
+            return False
+        if updated.tzinfo is None:
+            updated = updated.replace(tzinfo=timezone.utc)
+        return datetime.now(timezone.utc) - updated < ICAL_PUBLISH_GRACE
+
+    def _save_link(
+        self,
+        apple_uid: str,
+        gev: GoogleEvent,
+        aev: AppleEvent,
+        origin: str,
+    ) -> None:
+        self.store.upsert(
+            apple_uid,
+            gev.event_id,
+            gev.ical_uid,
+            aev.fingerprint(),
+            gev.fingerprint(),
+            origin,
+        )
+
+    def _replace_link_apple_uid(
+        self,
+        old_apple_uid: str,
+        new_apple_uid: str,
+        gev: GoogleEvent,
+        aev: AppleEvent,
+        origin: str,
+    ) -> None:
+        if old_apple_uid != new_apple_uid:
+            self.store.delete(old_apple_uid)
+        self._save_link(new_apple_uid, gev, aev, origin)
 
     def _auto_link_existing(
         self,
@@ -329,16 +373,17 @@ class CalendarSyncDaemon:
             if aev.uid in linked_apple:
                 continue
             gev = find_google_for_apple(aev, g_by_ical, google_events, tol)
-            if not gev or gev.event_id in linked_google:
+            if not gev:
                 continue
-            self.store.upsert(
-                aev.uid,
-                gev.event_id,
-                gev.ical_uid,
-                aev.fingerprint(),
-                gev.fingerprint(),
-                ORIGIN_APPLE,
-            )
+            if gev.event_id in linked_google:
+                existing = self.store.get_by_google(gev.event_id)
+                if existing and existing.apple_uid != aev.uid:
+                    self.store.delete(existing.apple_uid)
+                    linked_apple.discard(existing.apple_uid)
+                    linked_google.discard(gev.event_id)
+                else:
+                    continue
+            self._save_link(aev.uid, gev, aev, ORIGIN_APPLE)
             linked_apple.add(aev.uid)
             linked_google.add(gev.event_id)
             count += 1
@@ -453,14 +498,17 @@ class CalendarSyncDaemon:
 
             matched = find_apple_for_google(gev, apple_by_uid, tol)
             if matched:
-                self.store.upsert(
-                    matched.uid,
-                    gev.event_id,
-                    gev.ical_uid,
-                    matched.fingerprint(),
-                    gev.fingerprint(),
-                    ORIGIN_GOOGLE,
-                )
+                existing = self.store.get_by_google(gev.event_id)
+                if existing and existing.apple_uid != matched.uid:
+                    self._replace_link_apple_uid(
+                        existing.apple_uid,
+                        matched.uid,
+                        gev,
+                        matched,
+                        ORIGIN_GOOGLE,
+                    )
+                else:
+                    self._save_link(matched.uid, gev, matched, ORIGIN_GOOGLE)
                 log_info("매칭 연결만 (중복 생성 안 함): %s", gev.summary)
                 continue
 
@@ -483,12 +531,14 @@ class CalendarSyncDaemon:
                 gev.all_day,
             )
             log_info("Apple 생성 완료 (Google): %s", gev.summary)
+            # iCal UID는 게시 URL에서 달라질 수 있음 — Google event id 로 연결
+            fp = gev.fingerprint()
             self.store.upsert(
                 apple_uid,
                 gev.event_id,
                 gev.ical_uid,
-                gev.fingerprint(),
-                gev.fingerprint(),
+                fp,
+                fp,
                 ORIGIN_GOOGLE,
             )
 
@@ -561,15 +611,15 @@ class CalendarSyncDaemon:
                 aev, google_by_ical_uid, google_events, self._match_tolerance()
             )
             if matched:
-                self.store.upsert(
-                    aev.uid,
-                    matched.event_id,
-                    matched.ical_uid,
-                    aev.fingerprint(),
-                    matched.fingerprint(),
-                    ORIGIN_APPLE,
-                )
-                log_info("매칭 연결만 (중복 생성 안 함): %s", aev.summary)
+                existing = self.store.get_by_google(matched.event_id)
+                if existing and existing.apple_uid != aev.uid:
+                    self._replace_link_apple_uid(
+                        existing.apple_uid, aev.uid, matched, aev, ORIGIN_APPLE
+                    )
+                    log_info("링크 UID 정리 (중복 생성 안 함): %s", aev.summary)
+                else:
+                    self._save_link(aev.uid, matched, aev, ORIGIN_APPLE)
+                    log_info("매칭 연결만 (중복 생성 안 함): %s", aev.summary)
                 continue
 
             ical_uid = aev.uid or str(uuid.uuid4())
@@ -603,12 +653,29 @@ class CalendarSyncDaemon:
         self,
         apple_by_uid: Dict[str, AppleEvent],
         links: Dict[str, LinkRecord],
+        google_by_id: Dict[str, GoogleEvent],
     ) -> None:
+        tol = self._match_tolerance()
         for apple_uid, link in list(links.items()):
             if apple_uid in apple_by_uid:
                 continue
-            if link.last_origin == ORIGIN_GOOGLE:
-                # 방금 Google에서 만든/수정한 직후 Apple 반영 전일 수 있음 — 한 사이클 유예
+            gev = google_by_id.get(link.google_event_id)
+            rematched = False
+            if gev:
+                for aev in apple_by_uid.values():
+                    if events_match(aev, gev, tol):
+                        self._replace_link_apple_uid(
+                            apple_uid, aev.uid, gev, aev, link.last_origin
+                        )
+                        log_info(
+                            "iCal UID 변경으로 링크 갱신 (Google 삭제 안 함): %s",
+                            aev.summary,
+                        )
+                        rematched = True
+                        break
+            if rematched:
+                continue
+            if self._link_grace_active(link):
                 continue
             try:
                 google.delete_event(
