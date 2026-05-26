@@ -10,6 +10,14 @@ from typing import Dict, List
 
 logger = logging.getLogger(__name__)
 
+# 일정 시각 기준 ±N 일 안에서만 UID 검색 (전체 캘린더 훑기 방지)
+SEARCH_PAD_DAYS = 3
+
+
+def set_search_pad_days(days: int) -> None:
+    global SEARCH_PAD_DAYS
+    SEARCH_PAD_DAYS = max(1, int(days))
+
 # 필드 구분자 (일정 제목/본문에 거의 안 나오는 ASCII 제어문자)
 FIELD_SEP = "\x1e"
 RECORD_SEP = "\x1f"
@@ -113,6 +121,16 @@ def _mac_date_literal_from_dt(dt: datetime) -> str:
 def _mac_date_literal(dt: datetime) -> str:
     """맥 로케일의 date -r 출력을 AppleScript date 리터럴로 사용."""
     return _mac_date_literal_from_dt(dt)
+
+
+def _search_window_literals(near: datetime, pad_days: int | None = None) -> tuple[str, str]:
+    """이미 알고 있는 일정 시각(near) ± pad_days 로 AppleScript 검색창만 좁힘."""
+    pad = SEARCH_PAD_DAYS if pad_days is None else pad_days
+    local_tz = datetime.now().astimezone().tzinfo
+    center = near.astimezone(local_tz)
+    start = center - timedelta(days=pad)
+    end = center + timedelta(days=pad)
+    return _mac_date_literal_from_dt(start), _mac_date_literal_from_dt(end)
 
 
 def _parse_apple_datetime(value: str) -> datetime:
@@ -379,13 +397,17 @@ def update_event(
     loc_esc = _escape_applescript_string(location)
     ad = str(all_day).lower()
 
+    range_start_lit, range_end_lit = _search_window_literals(start)
     script = f'''
 set s to date "{s_lit}"
 set e to date "{e_lit}"
+set rangeStart to date "{range_start_lit}"
+set rangeEnd to date "{range_end_lit}"
 set found to false
 tell application "Calendar"
     tell calendar "{cal}"
-        repeat with ev in events
+        set candidates to every event whose start date is greater than or equal to rangeStart and start date is less than or equal to rangeEnd
+        repeat with ev in candidates
             try
                 if (uid of ev as text) is equal to "{uid_esc}" then
                     set summary of ev to "{sum_esc}"
@@ -415,15 +437,24 @@ return found
     return result.lower() == "true"
 
 
-def delete_event(calendar_name: str, uid: str) -> bool:
+def delete_event(
+    calendar_name: str,
+    uid: str,
+    near: datetime,
+    pad_days: int | None = None,
+) -> bool:
     cal = _escape_applescript_string(calendar_name)
     uid_esc = _escape_applescript_string(uid)
+    range_start_lit, range_end_lit = _search_window_literals(near, pad_days)
 
     script = f'''
+set rangeStart to date "{range_start_lit}"
+set rangeEnd to date "{range_end_lit}"
 set found to false
 tell application "Calendar"
     tell calendar "{cal}"
-        repeat with ev in events
+        set candidates to every event whose start date is greater than or equal to rangeStart and start date is less than or equal to rangeEnd
+        repeat with ev in candidates
             try
                 if (uid of ev as text) is equal to "{uid_esc}" then
                     delete ev
