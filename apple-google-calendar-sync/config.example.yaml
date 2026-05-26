@@ -45,3 +45,9 @@ fuzzy_match_tolerance_minutes: 5
 
 # 매 사이클 Google 전체 목록으로 매칭 (변경분만으로는 중복 위험)
 google_full_list_each_cycle: true
+
+# published_ical 모드: AppleScript delete/update 는 느려서 멈춤처럼 보임
+#   create_only — Google→Apple 신규만 (권장)
+#   full      — 수정·삭제도 AppleScript (느림)
+#   none      — Google→Apple 쓰기 안 함
+apple_script_writes: "create_only"

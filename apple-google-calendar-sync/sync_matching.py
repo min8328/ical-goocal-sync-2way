@@ -74,6 +74,10 @@ def has_sync_marker(description: str, marker: str) -> bool:
     return marker in (description or "")
 
 
+def _minute_utc(dt: datetime) -> datetime:
+    return dt.astimezone(timezone.utc).replace(second=0, microsecond=0)
+
+
 def core_fields_differ(
     apple: AppleEvent,
     google: GoogleEvent,
@@ -87,8 +91,9 @@ def core_fields_differ(
     if apple.all_day:
         if _start_key_all_day(apple.start) != _start_key_all_day(google.start):
             return True
-    elif abs(apple.start - google.start) > timedelta(minutes=tolerance_minutes):
-        return True
+    elif _minute_utc(apple.start) != _minute_utc(google.start):
+        if abs(apple.start - google.start) > timedelta(minutes=tolerance_minutes):
+            return True
     al = (apple.location or "").strip()
     gl = (google.location or "").strip()
     if al and gl and al != gl:

@@ -67,6 +67,7 @@ def load_config(path: str) -> dict:
     cfg.setdefault("fuzzy_match_enabled", True)
     cfg.setdefault("fuzzy_match_tolerance_minutes", 5)
     cfg.setdefault("google_full_list_each_cycle", True)
+    cfg.setdefault("apple_script_writes", "create_only")
 
     source = cfg["apple_source"]
     if source == APPLE_SOURCE_ICAL:
@@ -288,6 +289,18 @@ class CalendarSyncDaemon:
             return 0
         return int(self.cfg.get("fuzzy_match_tolerance_minutes", 5))
 
+    def _apple_script_mode(self) -> str:
+        """none | create_only | full — published_ical 에서 delete/update 는 매우 느림."""
+        if self._apple_source() == APPLE_SOURCE_ICAL:
+            return self.cfg.get("apple_script_writes", "create_only")
+        return self.cfg.get("apple_script_writes", "full")
+
+    def _may_apple_create(self) -> bool:
+        return self._apple_script_mode() in ("create_only", "full")
+
+    def _may_apple_update_delete(self) -> bool:
+        return self._apple_script_mode() == "full"
+
     def _auto_link_existing(
         self,
         apple_by_uid: Dict[str, AppleEvent],
@@ -358,13 +371,20 @@ class CalendarSyncDaemon:
                 continue
 
             if gev.status == "cancelled":
-                if link and not skip_apple_writes:
-                    if link.apple_uid in apple_by_uid:
+                if link:
+                    if (
+                        not skip_apple_writes
+                        and self._may_apple_update_delete()
+                        and link.apple_uid in apple_by_uid
+                    ):
                         log_info("Apple 삭제 시도 (Google 취소): %s", gev.summary)
                         apple.delete_event(self.apple_cal, link.apple_uid)
                         log_info("Apple 삭제 완료 (Google 취소): %s", gev.summary)
-                    self.store.delete(link.apple_uid)
-                elif link:
+                    else:
+                        log_info(
+                            "Google 취소 — DB만 삭제 (Apple은 Calendar에서 직접 삭제): %s",
+                            gev.summary,
+                        )
                     self.store.delete(link.apple_uid)
                 continue
 
@@ -381,7 +401,7 @@ class CalendarSyncDaemon:
                         ORIGIN_GOOGLE,
                     )
                     continue
-                if skip_apple_writes:
+                if skip_apple_writes or not self._may_apple_update_delete():
                     self.store.upsert(
                         link.apple_uid,
                         gev.event_id,
@@ -451,7 +471,7 @@ class CalendarSyncDaemon:
                 log_info("매칭 연결만 (중복 생성 안 함): %s", gev.summary)
                 continue
 
-            if skip_apple_writes:
+            if skip_apple_writes or not self._may_apple_create():
                 continue
 
             apple_uid = gev.ical_uid or str(uuid.uuid4())
