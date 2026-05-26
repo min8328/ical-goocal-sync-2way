@@ -17,10 +17,6 @@ def normalize_summary(text: str) -> str:
     return re.sub(r"\s+", " ", t)
 
 
-def _start_key_all_day(dt) -> str:
-    return dt.strftime("%Y-%m-%d")
-
-
 def events_match(
     apple: AppleEvent,
     google: GoogleEvent,
@@ -29,9 +25,10 @@ def events_match(
     if normalize_summary(apple.summary) != normalize_summary(google.summary):
         return False
     if apple.all_day != google.all_day:
-        return False
+        # Google 종일 ↔ Apple 시간일정(같은 날) 조합 허용
+        return _all_day_local_date(apple.start) == _all_day_local_date(google.start)
     if apple.all_day:
-        return _start_key_all_day(apple.start) == _start_key_all_day(google.start)
+        return _all_day_local_date(apple.start) == _all_day_local_date(google.start)
     delta = abs(apple.start - google.start)
     return delta <= timedelta(minutes=tolerance_minutes)
 
@@ -67,6 +64,20 @@ def find_google_for_apple(
         if events_match(apple, gev, tolerance_minutes):
             return gev
     return None
+
+
+def normalize_all_day_bounds(
+    start: datetime, end: datetime
+) -> tuple[datetime, datetime]:
+    """Google 종일 API(배타 종료일)에 맞게 하루 단위로 정규화."""
+    tz = _calendar_tz()
+    s = start.astimezone(tz).replace(hour=0, minute=0, second=0, microsecond=0)
+    e = end.astimezone(tz).replace(hour=0, minute=0, second=0, microsecond=0)
+    if e <= s:
+        e = s + timedelta(days=1)
+    elif e - s > timedelta(days=1):
+        e = s + timedelta(days=1)
+    return s.astimezone(timezone.utc), e.astimezone(timezone.utc)
 
 
 def has_sync_marker(description: str, marker: str) -> bool:

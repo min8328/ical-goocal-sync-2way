@@ -10,7 +10,7 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import yaml
 
@@ -25,6 +25,7 @@ from sync_matching import (
     find_apple_for_google,
     find_google_for_apple,
     has_sync_marker,
+    normalize_all_day_bounds,
 )
 from sync_store import LinkRecord, SyncStore
 
@@ -139,6 +140,7 @@ class CalendarSyncDaemon:
         self.apple_cal = cfg["apple_calendar_name"]
         self.google_cal = cfg["google_calendar_id"]
         self.marker = cfg.get("sync_marker", "")
+        google.set_timezone(cfg.get("timezone", "Asia/Seoul"))
         apple.set_search_pad_days(int(cfg.get("apple_script_search_pad_days", 3)))
 
     def close(self) -> None:
@@ -333,6 +335,36 @@ class CalendarSyncDaemon:
         if old_apple_uid != new_apple_uid:
             self.store.delete(old_apple_uid)
         self._save_link(new_apple_uid, gev, aev, origin)
+
+    def _apple_times_for_google(
+        self, aev: AppleEvent
+    ) -> tuple[datetime, datetime]:
+        if aev.all_day:
+            return normalize_all_day_bounds(aev.start, aev.end)
+        return aev.start, aev.end
+
+    def _resolve_link_for_ical_event(
+        self,
+        aev: AppleEvent,
+        google_by_id: Dict[str, GoogleEvent],
+    ) -> Optional[LinkRecord]:
+        """DB apple_uid 가 iCal UID 와 다를 때( Google→Apple 직후 ) 기존 링크 찾기."""
+        link = self.store.get_by_apple(aev.uid)
+        if link:
+            return link
+        tol = self._match_tolerance()
+        for old in self.store.all_links().values():
+            gev = google_by_id.get(old.google_event_id)
+            if not gev or gev.status == "cancelled":
+                continue
+            if events_match(aev, gev, tol):
+                if old.apple_uid != aev.uid:
+                    self._replace_link_apple_uid(
+                        old.apple_uid, aev.uid, gev, aev, old.last_origin
+                    )
+                    log_info("링크 UID 정리 (iCal): %s", aev.summary)
+                return self.store.get_by_apple(aev.uid)
+        return None
 
     def _auto_link_existing(
         self,
@@ -551,11 +583,12 @@ class CalendarSyncDaemon:
         links: Dict[str, LinkRecord],
     ) -> None:
         for aev in apple_events:
-            link = self.store.get_by_apple(aev.uid)
+            link = self._resolve_link_for_ical_event(aev, google_by_id)
             if link and link.last_origin == ORIGIN_GOOGLE and aev.fingerprint() == link.apple_fp:
                 continue
 
             desc = with_marker(aev.description, self.marker)
+            g_start, g_end = self._apple_times_for_google(aev)
 
             if link:
                 gev = google_by_id.get(link.google_event_id)
@@ -592,8 +625,8 @@ class CalendarSyncDaemon:
                     aev.summary,
                     desc,
                     aev.location,
-                    aev.start,
-                    aev.end,
+                    g_start,
+                    g_end,
                     aev.all_day,
                 )
                 logging.info("Google 수정 (Apple): %s", aev.summary)
@@ -622,6 +655,27 @@ class CalendarSyncDaemon:
                     log_info("매칭 연결만 (중복 생성 안 함): %s", aev.summary)
                 continue
 
+            marked_linked = False
+            for g in google_events:
+                if g.status == "cancelled":
+                    continue
+                if not has_sync_marker(g.description, self.marker):
+                    continue
+                if not events_match(aev, g, self._match_tolerance()):
+                    continue
+                existing = self.store.get_by_google(g.event_id)
+                if existing and existing.apple_uid != aev.uid:
+                    self._replace_link_apple_uid(
+                        existing.apple_uid, aev.uid, g, aev, ORIGIN_APPLE
+                    )
+                else:
+                    self._save_link(aev.uid, g, aev, ORIGIN_APPLE)
+                log_info("동기화 표시 Google 일정 연결 (생성 안 함): %s", aev.summary)
+                marked_linked = True
+                break
+            if marked_linked:
+                continue
+
             ical_uid = aev.uid or str(uuid.uuid4())
             log_info("Google 생성 시도 (Apple): %s", aev.summary)
             try:
@@ -632,8 +686,8 @@ class CalendarSyncDaemon:
                     aev.summary,
                     desc,
                     aev.location,
-                    aev.start,
-                    aev.end,
+                    g_start,
+                    g_end,
                     aev.all_day,
                 )
             except Exception:

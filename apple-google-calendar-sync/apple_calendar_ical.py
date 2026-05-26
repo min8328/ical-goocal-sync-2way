@@ -5,11 +5,13 @@ from __future__ import annotations
 import logging
 from datetime import date, datetime, timedelta, timezone
 from typing import List, Union
+from zoneinfo import ZoneInfo
 
 import requests
 from icalendar import Calendar
 
 from apple_calendar import AppleEvent, AppleCalendarError
+from google_calendar import CALENDAR_TIMEZONE
 
 logger = logging.getLogger(__name__)
 
@@ -23,13 +25,17 @@ def normalize_published_url(url: str) -> str:
     return u
 
 
+def _calendar_tz() -> ZoneInfo:
+    return ZoneInfo(CALENDAR_TIMEZONE)
+
+
 def _to_utc(value: Union[date, datetime]) -> datetime:
     if isinstance(value, datetime):
         if value.tzinfo is None:
-            local_tz = datetime.now().astimezone().tzinfo
-            value = value.replace(tzinfo=local_tz)
+            value = value.replace(tzinfo=_calendar_tz())
         return value.astimezone(timezone.utc)
-    return datetime(value.year, value.month, value.day, tzinfo=timezone.utc)
+    local = datetime(value.year, value.month, value.day, tzinfo=_calendar_tz())
+    return local.astimezone(timezone.utc)
 
 
 def _is_all_day(component) -> bool:
@@ -103,8 +109,9 @@ def list_events(
         if component.get("dtend"):
             end_raw = component.get("dtend").dt
             end = _to_utc(end_raw)
-            if all_day and isinstance(end_raw, date):
-                end = end + timedelta(days=1)
+            # 종일 DTEND 는 RFC5545 기준 익일(배타) — 추가 +1일 하면 이틀짜리로 깨짐
+            if all_day and isinstance(end_raw, date) and end <= start:
+                end = start + timedelta(days=1)
         else:
             end = start + (timedelta(days=1) if all_day else timedelta(hours=1))
 

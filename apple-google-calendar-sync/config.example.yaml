@@ -14,6 +14,9 @@ apple_published_url: ""
 # Google Calendar ID (기본 캘린더는 "primary")
 google_calendar_id: "primary"
 
+# 종일·시각 비교 및 Google API timeZone (한국: Asia/Seoul)
+timezone: "Asia/Seoul"
+
 poll_interval_seconds: 60
 
 sync_days_past: 30
