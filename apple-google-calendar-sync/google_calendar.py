@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -84,21 +85,21 @@ def get_service(credentials_path: str, token_path: str):
     return build("calendar", "v3", credentials=creds, cache_discovery=False)
 
 
-def _local_tzinfo():
-    return datetime.now().astimezone().tzinfo
+def _zone() -> ZoneInfo:
+    return ZoneInfo(CALENDAR_TIMEZONE)
 
 
 def _parse_google_dt(value: Dict, all_day: bool) -> datetime:
     raw = value.get("dateTime") or value.get("date")
     if all_day:
         y, m, d = (int(x) for x in raw.split("-"))
-        local = datetime(y, m, d, 0, 0, 0, tzinfo=_local_tzinfo())
+        local = datetime(y, m, d, 0, 0, 0, tzinfo=_zone())
         return local.astimezone(timezone.utc)
     if raw.endswith("Z"):
         raw = raw[:-1] + "+00:00"
     dt = datetime.fromisoformat(raw)
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=_local_tzinfo())
+        dt = dt.replace(tzinfo=_zone())
     return dt.astimezone(timezone.utc)
 
 
@@ -181,8 +182,7 @@ def list_events_incremental(
 
 
 def _google_time_fields(start: datetime, end: datetime, all_day: bool) -> Dict:
-    tz = _local_tzinfo()
-    tz_name = str(tz)
+    tz = _zone()
     start_local = start.astimezone(tz)
     end_local = end.astimezone(tz)
     if all_day:
@@ -199,11 +199,11 @@ def _google_time_fields(start: datetime, end: datetime, all_day: bool) -> Dict:
     return {
         "start": {
             "dateTime": start_local.strftime("%Y-%m-%dT%H:%M:%S"),
-            "timeZone": tz_name,
+            "timeZone": CALENDAR_TIMEZONE,
         },
         "end": {
             "dateTime": end_local.strftime("%Y-%m-%dT%H:%M:%S"),
-            "timeZone": tz_name,
+            "timeZone": CALENDAR_TIMEZONE,
         },
     }
 

@@ -496,7 +496,10 @@ class CalendarSyncDaemon:
 
             if link:
                 gev = google_by_id.get(link.google_event_id)
-                if gev and gev.fingerprint() == aev.fingerprint():
+                if not gev:
+                    continue
+                tol = self._match_tolerance()
+                if not core_fields_differ(aev, gev, tol):
                     self.store.upsert(
                         aev.uid,
                         link.google_event_id,
@@ -506,6 +509,7 @@ class CalendarSyncDaemon:
                         ORIGIN_APPLE,
                     )
                     continue
+                log_info("Google 수정 시도 (Apple): %s", aev.summary)
                 updated = google.update_event(
                     self.service,
                     self.google_cal,
@@ -544,18 +548,23 @@ class CalendarSyncDaemon:
                 continue
 
             ical_uid = aev.uid or str(uuid.uuid4())
-            created = google.create_event(
-                self.service,
-                self.google_cal,
-                ical_uid,
-                aev.summary,
-                desc,
-                aev.location,
-                aev.start,
-                aev.end,
-                aev.all_day,
-            )
-            logging.info("Google 생성 (Apple): %s", aev.summary)
+            log_info("Google 생성 시도 (Apple): %s", aev.summary)
+            try:
+                created = google.create_event(
+                    self.service,
+                    self.google_cal,
+                    ical_uid,
+                    aev.summary,
+                    desc,
+                    aev.location,
+                    aev.start,
+                    aev.end,
+                    aev.all_day,
+                )
+            except Exception:
+                logging.exception("Google 생성 실패 (Apple): %s", aev.summary)
+                continue
+            log_info("Google 생성 완료 (Apple): %s", aev.summary)
             self.store.upsert(
                 aev.uid,
                 created.event_id,

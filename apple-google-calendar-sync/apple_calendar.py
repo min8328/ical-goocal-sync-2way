@@ -31,6 +31,7 @@ class AppleEvent:
     revision: str = ""  # iCal LAST-MODIFIED 등 (published_ical 모드)
 
     def fingerprint(self) -> str:
+        """revision 은 제외 (iCal LAST-MODIFIED 만 바뀌어도 불필요한 Google 수정 방지)."""
         return "|".join(
             [
                 self.summary,
@@ -39,7 +40,6 @@ class AppleEvent:
                 self.start.isoformat(),
                 self.end.isoformat(),
                 "1" if self.all_day else "0",
-                self.revision,
             ]
         )
 
