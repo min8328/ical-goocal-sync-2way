@@ -361,7 +361,12 @@ class CalendarSyncDaemon:
 
             if gev.status == "cancelled":
                 if link:
-                    if not skip_apple_writes:
+                    if link.apple_uid in apple_by_uid:
+                        log_info(
+                            "Google 취소 건너뜀 (Apple iCal에 일정 있음, Apple 삭제 안 함): %s",
+                            gev.summary,
+                        )
+                    elif not skip_apple_writes:
                         log_info("Apple 삭제 시도 (Google 취소): %s", gev.summary)
                         apple.delete_event(
                             self.apple_cal, link.apple_uid, gev.start
@@ -373,6 +378,12 @@ class CalendarSyncDaemon:
             if link:
                 aev = apple_by_uid.get(link.apple_uid)
                 apple_fp = aev.fingerprint() if aev else link.apple_fp
+                if (
+                    aev
+                    and aev.fingerprint() == link.apple_fp
+                    and gev.fingerprint() == link.google_fp
+                ):
+                    continue
                 if not core_fields_differ(aev, gev, tol) if aev else False:
                     self.store.upsert(
                         link.apple_uid,
@@ -499,6 +510,18 @@ class CalendarSyncDaemon:
             if link:
                 gev = google_by_id.get(link.google_event_id)
                 if not gev:
+                    continue
+                # iCal이 마지막 동기화와 같으면 Google API 반올림 차이로 매 사이클 수정하지 않음
+                if aev.fingerprint() == link.apple_fp:
+                    if gev.fingerprint() != link.google_fp:
+                        self.store.upsert(
+                            aev.uid,
+                            link.google_event_id,
+                            gev.ical_uid or link.google_ical_uid,
+                            link.apple_fp,
+                            gev.fingerprint(),
+                            ORIGIN_APPLE,
+                        )
                     continue
                 tol = self._match_tolerance()
                 if not core_fields_differ(aev, gev, tol):

@@ -6,9 +6,10 @@ import re
 import unicodedata
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 from apple_calendar import AppleEvent
-from google_calendar import GoogleEvent
+from google_calendar import CALENDAR_TIMEZONE, GoogleEvent
 
 
 def normalize_summary(text: str) -> str:
@@ -74,8 +75,12 @@ def has_sync_marker(description: str, marker: str) -> bool:
     return marker in (description or "")
 
 
-def _minute_utc(dt: datetime) -> datetime:
-    return dt.astimezone(timezone.utc).replace(second=0, microsecond=0)
+def _calendar_tz() -> ZoneInfo:
+    return ZoneInfo(CALENDAR_TIMEZONE)
+
+
+def _all_day_local_date(dt: datetime) -> str:
+    return dt.astimezone(_calendar_tz()).strftime("%Y-%m-%d")
 
 
 def core_fields_differ(
@@ -83,17 +88,16 @@ def core_fields_differ(
     google: GoogleEvent,
     tolerance_minutes: int = 5,
 ) -> bool:
-    """제목·시각·종일·장소만 비교 (메모/UID 차이는 무시)."""
+    """제목·시각·종일·장소만 비교 (메모/UID·API 반올림 차이는 무시)."""
     if normalize_summary(apple.summary) != normalize_summary(google.summary):
         return True
     if apple.all_day != google.all_day:
         return True
     if apple.all_day:
-        if _start_key_all_day(apple.start) != _start_key_all_day(google.start):
+        if _all_day_local_date(apple.start) != _all_day_local_date(google.start):
             return True
-    elif _minute_utc(apple.start) != _minute_utc(google.start):
-        if abs(apple.start - google.start) > timedelta(minutes=tolerance_minutes):
-            return True
+    elif abs(apple.start - google.start) > timedelta(minutes=tolerance_minutes):
+        return True
     al = (apple.location or "").strip()
     gl = (google.location or "").strip()
     if al and gl and al != gl:
