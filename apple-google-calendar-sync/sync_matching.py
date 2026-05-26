@@ -72,3 +72,25 @@ def has_sync_marker(description: str, marker: str) -> bool:
     if not marker:
         return False
     return marker in (description or "")
+
+
+def core_fields_differ(
+    apple: AppleEvent,
+    google: GoogleEvent,
+    tolerance_minutes: int = 5,
+) -> bool:
+    """제목·시각·종일·장소만 비교 (메모/UID 차이는 무시)."""
+    if normalize_summary(apple.summary) != normalize_summary(google.summary):
+        return True
+    if apple.all_day != google.all_day:
+        return True
+    if apple.all_day:
+        if _start_key_all_day(apple.start) != _start_key_all_day(google.start):
+            return True
+    elif abs(apple.start - google.start) > timedelta(minutes=tolerance_minutes):
+        return True
+    al = (apple.location or "").strip()
+    gl = (google.location or "").strip()
+    if al and gl and al != gl:
+        return True
+    return False

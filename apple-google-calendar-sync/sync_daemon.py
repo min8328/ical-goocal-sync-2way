@@ -20,6 +20,7 @@ import google_calendar as google
 from apple_calendar import AppleEvent
 from google_calendar import GoogleEvent
 from sync_matching import (
+    core_fields_differ,
     find_apple_for_google,
     find_google_for_apple,
     has_sync_marker,
@@ -261,7 +262,12 @@ class CalendarSyncDaemon:
         log_info("기존 일정 자동 매칭 %d쌍 (DB 링크 %d개)", linked, len(self.store.all_links()))
         links = self.store.all_links()
 
-        self._apply_google_changes(google_delta, apple_by_uid, links)
+        self._apply_google_changes(
+            google_delta,
+            apple_by_uid,
+            links,
+            skip_apple_writes=skip_apple_to_google,
+        )
         links = self.store.all_links()
         if not skip_apple_to_google:
             self._apply_apple_changes(
@@ -273,7 +279,9 @@ class CalendarSyncDaemon:
             )
             self._reconcile_apple_deletions(apple_by_uid, links)
         else:
-            log_info("이번 사이클은 iCal 기준선만 저장 — Apple→Google 생략")
+            log_info(
+                "이번 사이클은 iCal 기준선 — Apple→Google·Google→Apple 쓰기 생략 (링크만 저장)"
+            )
 
     def _match_tolerance(self) -> int:
         if not self.cfg.get("fuzzy_match_enabled", True):
@@ -341,32 +349,59 @@ class CalendarSyncDaemon:
         google_events: List[GoogleEvent],
         apple_by_uid: Dict[str, AppleEvent],
         links: Dict[str, LinkRecord],
+        skip_apple_writes: bool = False,
     ) -> None:
+        tol = self._match_tolerance()
         for gev in google_events:
             link = self.store.get_by_google(gev.event_id)
             if link and link.last_origin == ORIGIN_APPLE and gev.fingerprint() == link.google_fp:
                 continue
 
             if gev.status == "cancelled":
-                if link:
+                if link and not skip_apple_writes:
                     if link.apple_uid in apple_by_uid:
+                        log_info("Apple 삭제 시도 (Google 취소): %s", gev.summary)
                         apple.delete_event(self.apple_cal, link.apple_uid)
-                        logging.info("Apple 삭제 (Google 취소): %s", gev.summary)
+                        log_info("Apple 삭제 완료 (Google 취소): %s", gev.summary)
+                    self.store.delete(link.apple_uid)
+                elif link:
                     self.store.delete(link.apple_uid)
                 continue
 
             if link:
                 aev = apple_by_uid.get(link.apple_uid)
-                if aev and aev.fingerprint() == gev.fingerprint():
+                apple_fp = aev.fingerprint() if aev else link.apple_fp
+                if not core_fields_differ(aev, gev, tol) if aev else False:
                     self.store.upsert(
                         link.apple_uid,
                         gev.event_id,
                         gev.ical_uid,
-                        aev.fingerprint(),
+                        apple_fp,
                         gev.fingerprint(),
                         ORIGIN_GOOGLE,
                     )
                     continue
+                if skip_apple_writes:
+                    self.store.upsert(
+                        link.apple_uid,
+                        gev.event_id,
+                        gev.ical_uid,
+                        apple_fp,
+                        gev.fingerprint(),
+                        ORIGIN_GOOGLE,
+                    )
+                    continue
+                if not aev:
+                    self.store.upsert(
+                        link.apple_uid,
+                        gev.event_id,
+                        gev.ical_uid,
+                        link.apple_fp,
+                        gev.fingerprint(),
+                        ORIGIN_GOOGLE,
+                    )
+                    continue
+                log_info("Apple 수정 시도 (Google): %s", gev.summary)
                 ok = apple.update_event(
                     self.apple_cal,
                     link.apple_uid,
@@ -378,6 +413,7 @@ class CalendarSyncDaemon:
                     gev.all_day,
                 )
                 if not ok:
+                    log_info("Apple 생성 시도 (UID 없음, Google): %s", gev.summary)
                     apple.create_event(
                         self.apple_cal,
                         link.apple_uid,
@@ -388,12 +424,12 @@ class CalendarSyncDaemon:
                         gev.end,
                         gev.all_day,
                     )
-                logging.info("Apple 수정 (Google): %s", gev.summary)
+                log_info("Apple 반영 완료 (Google): %s", gev.summary)
                 self.store.upsert(
                     link.apple_uid,
                     gev.event_id,
                     gev.ical_uid,
-                    gev.fingerprint(),
+                    aev.fingerprint(),
                     gev.fingerprint(),
                     ORIGIN_GOOGLE,
                 )
@@ -402,7 +438,7 @@ class CalendarSyncDaemon:
             if has_sync_marker(gev.description, self.marker):
                 continue
 
-            matched = find_apple_for_google(gev, apple_by_uid, self._match_tolerance())
+            matched = find_apple_for_google(gev, apple_by_uid, tol)
             if matched:
                 self.store.upsert(
                     matched.uid,
@@ -415,10 +451,14 @@ class CalendarSyncDaemon:
                 log_info("매칭 연결만 (중복 생성 안 함): %s", gev.summary)
                 continue
 
+            if skip_apple_writes:
+                continue
+
             apple_uid = gev.ical_uid or str(uuid.uuid4())
             if apple_uid in apple_by_uid:
                 continue
 
+            log_info("Apple 생성 시도 (Google): %s", gev.summary)
             apple.create_event(
                 self.apple_cal,
                 apple_uid,
@@ -429,7 +469,7 @@ class CalendarSyncDaemon:
                 gev.end,
                 gev.all_day,
             )
-            logging.info("Apple 생성 (Google): %s", gev.summary)
+            log_info("Apple 생성 완료 (Google): %s", gev.summary)
             self.store.upsert(
                 apple_uid,
                 gev.event_id,
