@@ -1,0 +1,53 @@
+# config.example.yaml 을 복사해 config.yaml 로 저장한 뒤 값을 수정하세요.
+
+apple_calendar_name: "가족"
+
+# Apple 일정 읽기 방식
+#   published_ical — iCloud 게시 URL (권장, ical_monitor 와 동일)
+#   calendar_app   — Calendar.app AppleScript (Mojave에서 느리거나 -1712)
+apple_source: "published_ical"
+
+# Calendar 앱 → 캘린더 → 게시… → webcal 주소의 https 버전
+# 예: https://pXXX-caldav.icloud.com/published/...
+apple_published_url: ""
+
+# Google Calendar ID (기본 캘린더는 "primary")
+google_calendar_id: "primary"
+
+# 종일·시각 비교 및 Google API timeZone (한국: Asia/Seoul)
+timezone: "Asia/Seoul"
+
+poll_interval_seconds: 60
+
+sync_days_past: 30
+sync_days_future: 90
+
+# iCal HTTP 타임아웃(초, iCloud 느릴 때 60~120)
+ical_request_timeout_seconds: 90
+
+# true: 첫 실행에 기존 일정 전부 Google로 (대량 생성 주의)
+# false: 첫 실행은 기준선만 저장, 이후 변경분만 반영 (권장)
+ical_bootstrap_import: false
+
+# calendar_app 모드 전용 (published_ical 에서는 무시)
+apple_script_timeout_seconds: 600
+apple_event_timeout_seconds: 1200
+apple_sync_chunk_days: 14
+
+google_credentials_path: "~/Documents/credentials.json"
+google_token_path: "~/Documents/token.json"
+
+state_db_path: "~/calendar-sync/sync_state.db"
+log_path: "~/calendar-sync/sync.log"
+
+sync_marker: "[AGS]"
+
+# 제목+시작시각으로 같은 일정 연결 (중복 생성 방지, 권장)
+fuzzy_match_enabled: true
+fuzzy_match_tolerance_minutes: 5
+
+# 매 사이클 Google 전체 목록으로 매칭 (변경분만으로는 중복 위험)
+google_full_list_each_cycle: true
+
+# Google→Apple 수정·삭제 시 UID 찾기: 알고 있는 일정 시각 기준 앞뒤 N일만 조회
+apple_script_search_pad_days: 3

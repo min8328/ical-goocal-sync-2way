@@ -1,0 +1,471 @@
+"""Apple Calendar.app 접근 (AppleScript, macOS 10.14+)."""
+
+from __future__ import annotations
+
+import logging
+import subprocess
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Dict, List
+
+logger = logging.getLogger(__name__)
+
+# 일정 시각 기준 ±N 일 안에서만 UID 검색 (전체 캘린더 훑기 방지)
+SEARCH_PAD_DAYS = 3
+
+
+def set_search_pad_days(days: int) -> None:
+    global SEARCH_PAD_DAYS
+    SEARCH_PAD_DAYS = max(1, int(days))
+
+# 필드 구분자 (일정 제목/본문에 거의 안 나오는 ASCII 제어문자)
+FIELD_SEP = "\x1e"
+RECORD_SEP = "\x1f"
+
+
+class AppleCalendarError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class AppleEvent:
+    uid: str
+    summary: str
+    description: str
+    location: str
+    start: datetime
+    end: datetime
+    all_day: bool
+    revision: str = ""  # iCal LAST-MODIFIED 등 (published_ical 모드)
+
+    def fingerprint(self) -> str:
+        """revision 은 제외 (iCal LAST-MODIFIED 만 바뀌어도 불필요한 Google 수정 방지)."""
+        return "|".join(
+            [
+                self.summary,
+                self.description,
+                self.location,
+                self.start.isoformat(),
+                self.end.isoformat(),
+                "1" if self.all_day else "0",
+            ]
+        )
+
+
+def _run_applescript(script: str, timeout_seconds: int = 600) -> str:
+    """Mojave 호환: 여러 줄 스크립트는 stdin으로 전달."""
+    try:
+        proc = subprocess.run(
+            ["osascript", "-"],
+            input=script,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise AppleCalendarError(
+            f"AppleScript 시간 초과 ({timeout_seconds}초). "
+            "Calendar.app이 응답하지 않거나 일정이 너무 많습니다. "
+            "config.yaml 의 sync_days_past/sync_days_future 를 줄여 보세요."
+        ) from exc
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "").strip()
+        raise AppleCalendarError(err or "AppleScript failed")
+    return (proc.stdout or "").strip()
+
+
+def _escape_applescript_string(value: str) -> str:
+    value = (value or "").replace("\r\n", "\n").replace("\r", "\n")
+    return (
+        value.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", "\\n")
+        .replace("\t", " ")
+    )
+
+
+def _local_datetimes_for_apple(
+    start: datetime, end: datetime, all_day: bool
+) -> tuple[datetime, datetime]:
+    """Calendar.app용 로컬 시각 (종일=자정 기준)."""
+    local_tz = datetime.now().astimezone().tzinfo
+    s = start.astimezone(local_tz)
+    e = end.astimezone(local_tz)
+    if all_day:
+        s = s.replace(hour=0, minute=0, second=0, microsecond=0)
+        e = e.replace(hour=0, minute=0, second=0, microsecond=0)
+        if e <= s:
+            e = s + timedelta(days=1)
+    elif e <= s:
+        e = s + timedelta(hours=1)
+    return s, e
+
+
+def _mac_date_literal_from_dt(dt: datetime) -> str:
+    ts = int(dt.timestamp())
+    proc = subprocess.run(
+        ["date", "-r", str(ts)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise AppleCalendarError(
+            f"date -r {ts} 실패: {(proc.stderr or proc.stdout).strip()}"
+        )
+    return _escape_applescript_string(proc.stdout.strip())
+
+
+def _mac_date_literal(dt: datetime) -> str:
+    """맥 로케일의 date -r 출력을 AppleScript date 리터럴로 사용."""
+    return _mac_date_literal_from_dt(dt)
+
+
+def _search_window_literals(near: datetime, pad_days: int | None = None) -> tuple[str, str]:
+    """이미 알고 있는 일정 시각(near) ± pad_days 로 AppleScript 검색창만 좁힘."""
+    pad = SEARCH_PAD_DAYS if pad_days is None else pad_days
+    local_tz = datetime.now().astimezone().tzinfo
+    center = near.astimezone(local_tz)
+    start = center - timedelta(days=pad)
+    end = center + timedelta(days=pad)
+    return _mac_date_literal_from_dt(start), _mac_date_literal_from_dt(end)
+
+
+def _parse_apple_datetime(value: str) -> datetime:
+    if value.endswith("Z"):
+        value = value[:-1] + "+00:00"
+    dt = datetime.fromisoformat(value)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _local_components_to_utc(parts: List[str], offset: int) -> datetime:
+    """AppleScript에서 넘긴 로컬 시각(년~초) → UTC."""
+    y, mo, d, h, mi, s = (int(parts[offset + i]) for i in range(6))
+    local_tz = datetime.now().astimezone().tzinfo
+    local_dt = datetime(y, mo, d, h, mi, s, tzinfo=local_tz)
+    return local_dt.astimezone(timezone.utc)
+
+
+def _parse_record_line(line: str) -> AppleEvent:
+    parts = line.split(FIELD_SEP)
+    if len(parts) < 17:
+        raise AppleCalendarError(f"잘못된 Apple 이벤트 레코드: {line[:120]}")
+    uid, summary, description, location = parts[0], parts[1], parts[2], parts[3]
+    all_day_s = parts[16]
+    return AppleEvent(
+        uid=uid,
+        summary=summary,
+        description=description,
+        location=location,
+        start=_local_components_to_utc(parts, 4),
+        end=_local_components_to_utc(parts, 10),
+        all_day=all_day_s.lower() in ("true", "1", "yes"),
+    )
+
+
+def _list_events_chunk(
+    calendar_name: str,
+    start: datetime,
+    end: datetime,
+    timeout_seconds: int,
+    ae_timeout_seconds: int,
+) -> List[AppleEvent]:
+    cal = _escape_applescript_string(calendar_name)
+    start_lit = _mac_date_literal(start)
+    end_lit = _mac_date_literal(end)
+
+    script = f'''
+set fieldSep to (ASCII character 30)
+set recordSep to (ASCII character 31)
+set rangeStart to date "{start_lit}"
+set rangeEnd to date "{end_lit}"
+set eventRecords to {{}}
+
+with timeout of {ae_timeout_seconds} seconds
+    tell application "Calendar"
+        if not running then launch
+        delay 1
+        if not (exists calendar "{cal}") then
+            error "Calendar not found: {cal}"
+        end if
+        set calRef to calendar "{cal}"
+        set matched to every event of calRef whose start date is greater than or equal to rangeStart and start date is less than or equal to rangeEnd
+        repeat with ev in matched
+        set sd to start date of ev
+        set endVal to sd
+        try
+            set endVal to end date of ev
+        end try
+        set ad to false
+        try
+            set ad to allday event of ev
+        end try
+
+        set uidText to ""
+        try
+            set uidText to uid of ev as text
+        end try
+        set sumText to ""
+        try
+            set sumText to summary of ev as text
+        end try
+        set descText to ""
+        try
+            set descText to description of ev as text
+        end try
+        set locText to ""
+        try
+            set locText to location of ev as text
+        end try
+
+        set oneLine to uidText & fieldSep & sumText & fieldSep & descText & fieldSep & locText & fieldSep & (year of sd as text) & fieldSep & (month of sd as integer as text) & fieldSep & (day of sd as text) & fieldSep & (hours of sd as text) & fieldSep & (minutes of sd as text) & fieldSep & (seconds of sd as text) & fieldSep & (year of endVal as text) & fieldSep & (month of endVal as integer as text) & fieldSep & (day of endVal as text) & fieldSep & (hours of endVal as text) & fieldSep & (minutes of endVal as text) & fieldSep & (seconds of endVal as text) & fieldSep & (ad as text)
+            set end of eventRecords to oneLine
+        end repeat
+    end tell
+end timeout
+
+set AppleScript's text item delimiters to recordSep
+set outText to eventRecords as text
+set AppleScript's text item delimiters to ""
+return outText
+'''
+
+    raw = _run_applescript(script, timeout_seconds=timeout_seconds)
+    if not raw:
+        return []
+
+    events: List[AppleEvent] = []
+    for record in raw.split(RECORD_SEP):
+        record = record.strip()
+        if not record:
+            continue
+        events.append(_parse_record_line(record))
+    return events
+
+
+def _list_events_chunk_auto_split(
+    calendar_name: str,
+    start: datetime,
+    end: datetime,
+    timeout_seconds: int,
+    ae_timeout_seconds: int,
+    min_chunk_days: int,
+) -> List[AppleEvent]:
+    try:
+        return _list_events_chunk(
+            calendar_name, start, end, timeout_seconds, ae_timeout_seconds
+        )
+    except AppleCalendarError as err:
+        msg = str(err)
+        timed_out = "-1712" in msg or "시간이 초과" in msg or "timed out" in msg.lower()
+        span_days = max(1, (end - start).days)
+        if not timed_out or span_days <= min_chunk_days:
+            raise
+        mid = start + timedelta(days=span_days // 2)
+        logger.warning(
+            "Apple Calendar 타임아웃 — 구간 분할 (%s ~ %s, %d일 → 절반)",
+            start.date(),
+            end.date(),
+            span_days,
+        )
+        left = _list_events_chunk_auto_split(
+            calendar_name,
+            start,
+            mid,
+            timeout_seconds,
+            ae_timeout_seconds,
+            min_chunk_days,
+        )
+        right = _list_events_chunk_auto_split(
+            calendar_name,
+            mid + timedelta(seconds=1),
+            end,
+            timeout_seconds,
+            ae_timeout_seconds,
+            min_chunk_days,
+        )
+        return left + right
+
+
+def list_events(
+    calendar_name: str,
+    start: datetime,
+    end: datetime,
+    timeout_seconds: int = 600,
+    chunk_days: int = 14,
+    ae_timeout_seconds: int | None = None,
+    min_chunk_days: int = 7,
+) -> List[AppleEvent]:
+    if ae_timeout_seconds is None:
+        ae_timeout_seconds = max(timeout_seconds, 120)
+
+    by_uid: Dict[str, AppleEvent] = {}
+    cursor = start
+    chunk_index = 0
+
+    while cursor < end:
+        chunk_index += 1
+        chunk_end = min(cursor + timedelta(days=chunk_days), end)
+        logger.info(
+            "Apple 조회 구간 %d: %s ~ %s",
+            chunk_index,
+            cursor.strftime("%Y-%m-%d"),
+            chunk_end.strftime("%Y-%m-%d"),
+        )
+        chunk_events = _list_events_chunk_auto_split(
+            calendar_name,
+            cursor,
+            chunk_end,
+            timeout_seconds,
+            ae_timeout_seconds,
+            min_chunk_days,
+        )
+        for ev in chunk_events:
+            if ev.uid:
+                by_uid[ev.uid] = ev
+        cursor = chunk_end + timedelta(seconds=1)
+
+    return list(by_uid.values())
+
+
+def create_event(
+    calendar_name: str,
+    uid: str,
+    summary: str,
+    description: str,
+    location: str,
+    start: datetime,
+    end: datetime,
+    all_day: bool,
+) -> None:
+    cal = _escape_applescript_string(calendar_name)
+    s_local, e_local = _local_datetimes_for_apple(start, end, all_day)
+    s_lit = _mac_date_literal_from_dt(s_local)
+    e_lit = _mac_date_literal_from_dt(e_local)
+    sum_esc = _escape_applescript_string(summary)
+    desc_esc = _escape_applescript_string(description)
+    loc_esc = _escape_applescript_string(location)
+    uid_esc = _escape_applescript_string(uid)
+    ad = str(all_day).lower()
+
+    script = f'''
+set s to date "{s_lit}"
+set e to date "{e_lit}"
+tell application "Calendar"
+    tell calendar "{cal}"
+        set ev to make new event with properties {{summary:"{sum_esc}", allday event:{ad}, start date:s, end date:e}}
+        try
+            set description of ev to "{desc_esc}"
+        on error
+            try
+                set notes of ev to "{desc_esc}"
+            end try
+        end try
+        try
+            set location of ev to "{loc_esc}"
+        end try
+        try
+            set uid of ev to "{uid_esc}"
+        end try
+    end tell
+end tell
+'''
+    _run_applescript(script)
+
+
+def update_event(
+    calendar_name: str,
+    uid: str,
+    summary: str,
+    description: str,
+    location: str,
+    start: datetime,
+    end: datetime,
+    all_day: bool,
+) -> bool:
+    cal = _escape_applescript_string(calendar_name)
+    uid_esc = _escape_applescript_string(uid)
+    s_local, e_local = _local_datetimes_for_apple(start, end, all_day)
+    s_lit = _mac_date_literal_from_dt(s_local)
+    e_lit = _mac_date_literal_from_dt(e_local)
+    sum_esc = _escape_applescript_string(summary)
+    desc_esc = _escape_applescript_string(description)
+    loc_esc = _escape_applescript_string(location)
+    ad = str(all_day).lower()
+
+    range_start_lit, range_end_lit = _search_window_literals(start)
+    script = f'''
+set s to date "{s_lit}"
+set e to date "{e_lit}"
+set rangeStart to date "{range_start_lit}"
+set rangeEnd to date "{range_end_lit}"
+set found to false
+tell application "Calendar"
+    tell calendar "{cal}"
+        set candidates to every event whose start date is greater than or equal to rangeStart and start date is less than or equal to rangeEnd
+        repeat with ev in candidates
+            try
+                if (uid of ev as text) is equal to "{uid_esc}" then
+                    set summary of ev to "{sum_esc}"
+                    set allday event of ev to {ad}
+                    set start date of ev to s
+                    set end date of ev to e
+                    try
+                        set description of ev to "{desc_esc}"
+                    on error
+                        try
+                            set notes of ev to "{desc_esc}"
+                        end try
+                    end try
+                    try
+                        set location of ev to "{loc_esc}"
+                    end try
+                    set found to true
+                    exit repeat
+                end if
+            end try
+        end repeat
+    end tell
+end tell
+return found
+'''
+    result = _run_applescript(script)
+    return result.lower() == "true"
+
+
+def delete_event(
+    calendar_name: str,
+    uid: str,
+    near: datetime,
+    pad_days: int | None = None,
+) -> bool:
+    cal = _escape_applescript_string(calendar_name)
+    uid_esc = _escape_applescript_string(uid)
+    range_start_lit, range_end_lit = _search_window_literals(near, pad_days)
+
+    script = f'''
+set rangeStart to date "{range_start_lit}"
+set rangeEnd to date "{range_end_lit}"
+set found to false
+tell application "Calendar"
+    tell calendar "{cal}"
+        set candidates to every event whose start date is greater than or equal to rangeStart and start date is less than or equal to rangeEnd
+        repeat with ev in candidates
+            try
+                if (uid of ev as text) is equal to "{uid_esc}" then
+                    delete ev
+                    set found to true
+                    exit repeat
+                end if
+            end try
+        end repeat
+    end tell
+end tell
+return found
+'''
+    result = _run_applescript(script)
+    return result.lower() == "true"
