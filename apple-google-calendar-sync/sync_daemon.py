@@ -17,7 +17,8 @@ import yaml
 import apple_calendar as apple
 import apple_calendar_ical as apple_ical
 import google_calendar as google
-from apple_calendar import AppleEvent
+from apple_calendar import AppleCalendarError, AppleEvent
+from google.auth.exceptions import RefreshError
 from google_calendar import GoogleEvent
 from sync_matching import (
     core_fields_differ,
@@ -193,6 +194,16 @@ class CalendarSyncDaemon:
         while True:
             try:
                 self.run_once()
+            except RefreshError:
+                logging.error(
+                    "Google OAuth 토큰 만료(invalid_grant). "
+                    "config 의 google_token_path 파일을 삭제한 뒤 "
+                    "python3 sync_daemon.py --auth 로 다시 로그인하고 데몬을 재시작하세요."
+                )
+            except google.GoogleCalendarError as exc:
+                logging.error("Google Calendar: %s", exc)
+            except AppleCalendarError as exc:
+                logging.error("Apple iCal: %s", exc)
             except Exception:
                 logging.exception("동기화 사이클 오류")
             time.sleep(interval)

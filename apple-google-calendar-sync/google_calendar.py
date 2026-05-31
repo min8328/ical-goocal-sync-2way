@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
+from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -61,6 +62,14 @@ def _expand(path: str) -> Path:
     return Path(path).expanduser().resolve()
 
 
+def _auth_error_message(token_file: Path) -> str:
+    return (
+        "Google OAuth 토큰이 만료되었거나 취소되었습니다. "
+        f"1) {token_file} 삭제  2) python3 sync_daemon.py --auth 로 브라우저 로그인  "
+        "3) 데몬 재시작"
+    )
+
+
 def get_service(credentials_path: str, token_path: str):
     cred_file = _expand(credentials_path)
     token_file = _expand(token_path)
@@ -71,7 +80,11 @@ def get_service(credentials_path: str, token_path: str):
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
+            try:
+                creds.refresh(Request())
+            except RefreshError:
+                token_file.unlink(missing_ok=True)
+                raise GoogleCalendarError(_auth_error_message(token_file)) from None
         else:
             if not cred_file.exists():
                 raise GoogleCalendarError(

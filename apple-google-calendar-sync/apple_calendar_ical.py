@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import date, datetime, timedelta, timezone
 from typing import List, Union
 from zoneinfo import ZoneInfo
@@ -70,10 +71,24 @@ def list_events(
     if not url:
         raise AppleCalendarError("apple_published_url 이 비어 있습니다.")
 
-    try:
-        response = requests.get(url, timeout=timeout_seconds)
-    except requests.RequestException as exc:
-        raise AppleCalendarError(f"iCal 다운로드 실패: {exc}") from exc
+    response = None
+    last_exc: Exception | None = None
+    for attempt in range(1, 4):
+        try:
+            response = requests.get(url, timeout=timeout_seconds)
+            break
+        except requests.RequestException as exc:
+            last_exc = exc
+            if attempt < 3:
+                logger.warning(
+                    "iCal 다운로드 재시도 %d/3 (%s): %s",
+                    attempt,
+                    url[:60],
+                    exc,
+                )
+                time.sleep(2 * attempt)
+    if response is None:
+        raise AppleCalendarError(f"iCal 다운로드 실패: {last_exc}") from last_exc
 
     if response.status_code != 200:
         raise AppleCalendarError(

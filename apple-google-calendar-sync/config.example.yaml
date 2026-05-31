@@ -22,8 +22,8 @@ poll_interval_seconds: 60
 sync_days_past: 30
 sync_days_future: 90
 
-# iCal HTTP 타임아웃(초)
-ical_request_timeout_seconds: 30
+# iCal HTTP 타임아웃(초, iCloud 느릴 때 60~120)
+ical_request_timeout_seconds: 90
 
 # true: 첫 실행에 기존 일정 전부 Google로 (대량 생성 주의)
 # false: 첫 실행은 기준선만 저장, 이후 변경분만 반영 (권장)
